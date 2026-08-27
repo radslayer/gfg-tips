@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// Two roles, stored in the `roles/{uid}` collection (one doc per user,
+// document ID = that user's Firebase Auth UID), each holding {role: "admin"}
+// or {role: "entry"}.
+//
+//   admin  (Rod) -- full read/write on every tipsPeriods document.
+//   entry  (Larry) -- can create a new period document and update/read
+//                     ONLY the one he's actively working on (status =
+//                     "open"). Once a period is marked "submitted" by
+//                     Larry, he can still read it but can no longer edit
+//                     it -- only an admin can re-open or correct it.
+//
+// Nobody can read another user's `roles` doc except themselves and admins
+// (so Larry can't enumerate who has what role).
+//
+// There is nothing else in this Firebase project -- it holds ONLY tip
+// period submissions, on purpose, so Larry's account has no path to any
+// other GFG data (payroll, wages, tracker, etc. all stay local/Excel).
+
+function isSignedIn() {
+  return request.auth != null;
+}
+
+function myRole() {
+  return isSignedIn()
+    ? get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role
+    : null;
+}
+
+function isAdmin() {
+  return myRole() == 'admin';
+}
+
+function isEntry() {
+  return myRole() == 'entry';
+}
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /roles/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      // Roles are assigned by hand in the Firebase console, not via the app.
+      allow write: if false;
+    }
+
+    match /tipsPeriods/{periodId} {
+      allow read: if isAdmin() || (isEntry() && resource != null);
+      allow create: if isAdmin() || isEntry();
+      allow update: if isAdmin()
+        || (isEntry() && resource.data.status == 'open');
+      allow delete: if isAdmin();
+    }
+  }
+}

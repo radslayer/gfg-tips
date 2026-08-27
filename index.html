@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GFG Tips Distribution — Input Form</title>
+<style>
+  :root {
+    --ink: #1f2328;
+    --muted: #57606a;
+    --border: #d0d7de;
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --accent: #0969da;
+    --accent-ink: #ffffff;
+    --yellow: #fff8c5;
+    --danger: #cf222e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    color: var(--ink);
+    background: var(--panel);
+  }
+  header {
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 {
+    font-size: 16px;
+    margin: 0;
+  }
+  #whoami {
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  main {
+    max-width: 640px;
+    margin: 24px auto;
+    padding: 0 16px 48px;
+  }
+  .card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: 15px;
+    margin: 0 0 12px;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  input[type=text], input[type=email], input[type=password], input[type=number], input[type=date] {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  .field { margin-bottom: 14px; }
+  .money { background: var(--yellow); }
+  .row { display: flex; gap: 12px; }
+  .row > .field { flex: 1; }
+  button {
+    font-family: inherit;
+    font-size: 14px;
+    padding: 9px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    cursor: pointer;
+  }
+  button.primary {
+    background: var(--accent);
+    color: var(--accent-ink);
+    border-color: var(--accent);
+  }
+  button.link {
+    border: none;
+    background: none;
+    color: var(--accent);
+    padding: 0;
+    text-decoration: underline;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  th { color: var(--muted); font-weight: normal; font-size: 12px; text-transform: uppercase; }
+  .net-pool {
+    font-weight: bold;
+    font-size: 16px;
+    background: #eaeef2;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .msg { font-size: 13px; margin-top: 10px; }
+  .msg.error { color: var(--danger); }
+  .msg.ok { color: #1a7f37; }
+  .hidden { display: none !important; }
+  .status-pill {
+    display: inline-block;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #eaeef2;
+    color: var(--muted);
+  }
+  .status-pill.submitted { background: #d1f4dd; color: #1a7f37; }
+  #loginCard { max-width: 360px; margin: 80px auto; }
+  .small { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>GFG Tips Distribution</h1>
+  <div id="whoami" class="hidden">
+    <span id="whoamiText"></span>
+    <button id="signOutBtn">Sign out</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- Login -->
+  <div id="loginCard" class="card">
+    <h2>Sign in</h2>
+    <div class="field">
+      <label for="email">Email</label>
+      <input type="email" id="email" autocomplete="username" />
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" autocomplete="current-password" />
+    </div>
+    <button class="primary" id="signInBtn" style="width:100%">Sign in</button>
+    <div id="loginMsg" class="msg error"></div>
+  </div>
+
+  <!-- Main app (shown after sign-in) -->
+  <div id="app" class="hidden">
+
+    <div class="card">
+      <h2>Pay period</h2>
+      <div class="field">
+        <label for="payDate">Pay date for this 4-week tip period</label>
+        <input type="date" id="payDate" />
+      </div>
+      <div class="small">Choosing a date loads that period if it already exists, or starts a new one.</div>
+      <div id="periodStatus" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card" id="formCard">
+      <h2>4-Week Tip Pool</h2>
+      <div class="field">
+        <label for="totalRevenue">Total Tip Revenue (4-week period)</label>
+        <input type="number" step="0.01" id="totalRevenue" class="money" />
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="bonnieBrae">Less: Bonnie Brae Liquor</label>
+          <input type="number" step="0.01" id="bonnieBrae" class="money" />
+        </div>
+        <div class="field">
+          <label for="swift">Less: Swift</label>
+          <input type="number" step="0.01" id="swift" class="money" />
+        </div>
+      </div>
+      <div class="net-pool">Net GFG Tip Pool: <span id="netPool">$0.00</span></div>
+
+      <h2 style="margin-top:24px;">1099 Driver Days Driven</h2>
+      <div class="small" style="margin-bottom:10px;">
+        Every day a driver drove counts as 1.0 day, no matter how many hours
+        that day — the half-day rule for hourly employees doesn't apply here.
+      </div>
+      <table>
+        <thead><tr><th>Driver name</th><th>Days driven</th><th></th></tr></thead>
+        <tbody id="driverRows"></tbody>
+      </table>
+      <button id="addDriverBtn" style="margin-top:10px;">+ Add driver</button>
+
+      <div style="margin-top:24px; display:flex; gap:10px;">
+        <button id="saveDraftBtn">Save draft</button>
+        <button class="primary" id="submitBtn">Submit</button>
+      </div>
+      <div id="formMsg" class="msg"></div>
+    </div>
+
+    <div class="card hidden" id="adminCard">
+      <h2>All periods (admin)</h2>
+      <table>
+        <thead><tr><th>Pay date</th><th>Status</th><th>Net pool</th><th></th></tr></thead>
+        <tbody id="adminRows"></tbody>
+      </table>
+    </div>
+
+  </div>
+
+</main>
+
+<script src="firebase-config.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
