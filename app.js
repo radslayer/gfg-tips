@@ -26,6 +26,11 @@ const PAY_PERIOD_START = "2026-09-25";
 const PAY_PERIOD_INTERVAL_DAYS = 28;
 const PAY_PERIOD_COUNT = 60; // ~4.6 years out
 
+// One-off historical/test periods that don't fall on the generated
+// cadence above -- added by hand as needed (e.g. to pressure-test the
+// tips calculation against a known real past period).
+const EXTRA_PAY_PERIOD_DATES = ["2026-08-14"];
+
 function generatePayPeriodDates(startStr, intervalDays, count) {
   const [y, m, d] = startStr.split("-").map(Number);
   const cur = new Date(y, m - 1, d);
@@ -40,9 +45,10 @@ function generatePayPeriodDates(startStr, intervalDays, count) {
   return dates;
 }
 
-const PAY_PERIOD_DATES = generatePayPeriodDates(
-  PAY_PERIOD_START, PAY_PERIOD_INTERVAL_DAYS, PAY_PERIOD_COUNT
-);
+const PAY_PERIOD_DATES = [
+  ...EXTRA_PAY_PERIOD_DATES,
+  ...generatePayPeriodDates(PAY_PERIOD_START, PAY_PERIOD_INTERVAL_DAYS, PAY_PERIOD_COUNT),
+].sort();
 
 function formatPayDateLabel(dateStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
