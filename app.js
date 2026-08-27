@@ -17,9 +17,44 @@ const db = getFirestore(app);
 
 const DEFAULT_DRIVERS = ["Richard Haselton", "Ross Pullen", "Randy Pruitt"];
 
+// Tips periods run every 4 weeks (every other biweekly pay period), always
+// on a Friday. First one is 4 weeks after the 8/28/2026 pay date; every
+// one after that is another 4 weeks (28 days) later. Generating a long
+// list up front means the dropdown never needs to change dynamically --
+// extend PAY_PERIOD_COUNT someday if this list ever runs out.
+const PAY_PERIOD_START = "2026-09-25";
+const PAY_PERIOD_INTERVAL_DAYS = 28;
+const PAY_PERIOD_COUNT = 60; // ~4.6 years out
+
+function generatePayPeriodDates(startStr, intervalDays, count) {
+  const [y, m, d] = startStr.split("-").map(Number);
+  const cur = new Date(y, m - 1, d);
+  const dates = [];
+  for (let i = 0; i < count; i++) {
+    const yyyy = cur.getFullYear();
+    const mm = String(cur.getMonth() + 1).padStart(2, "0");
+    const dd = String(cur.getDate()).padStart(2, "0");
+    dates.push(`${yyyy}-${mm}-${dd}`);
+    cur.setDate(cur.getDate() + intervalDays);
+  }
+  return dates;
+}
+
+const PAY_PERIOD_DATES = generatePayPeriodDates(
+  PAY_PERIOD_START, PAY_PERIOD_INTERVAL_DAYS, PAY_PERIOD_COUNT
+);
+
+function formatPayDateLabel(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+  });
+}
+
 let currentRole = null;   // "admin" | "entry" | null
 let currentPeriodId = null;
 let currentPeriodStatus = null;
+let periodDefaultChosen = false;
 
 // ---------- DOM helpers ----------
 const $ = (id) => document.getElementById(id);
@@ -31,6 +66,18 @@ function setMsg(el, text, kind) {
   el.textContent = text || "";
   el.className = "msg" + (kind ? " " + kind : "");
 }
+
+function populatePayDateOptions() {
+  const sel = $("payDate");
+  sel.innerHTML = "";
+  PAY_PERIOD_DATES.forEach((dateStr) => {
+    const opt = document.createElement("option");
+    opt.value = dateStr;
+    opt.textContent = formatPayDateLabel(dateStr);
+    sel.appendChild(opt);
+  });
+}
+populatePayDateOptions();
 
 // ---------- Auth ----------
 $("signInBtn").addEventListener("click", async () => {
@@ -81,12 +128,31 @@ onAuthStateChanged(auth, async (user) => {
     show($("formCard"));
   }
 
-  // Default the date picker to today if nothing chosen yet.
-  if (!$("payDate").value) {
-    $("payDate").value = new Date().toISOString().slice(0, 10);
-    loadPeriod($("payDate").value);
+  // Default the dropdown to the earliest period that hasn't been
+  // submitted yet -- only figure this out once per session, so we don't
+  // yank the user back to it if they've since picked a different date.
+  if (!periodDefaultChosen) {
+    periodDefaultChosen = true;
+    const defaultDate = await pickDefaultPeriod();
+    $("payDate").value = defaultDate;
+    loadPeriod(defaultDate);
   }
 });
+
+async function pickDefaultPeriod() {
+  let submitted = new Set();
+  try {
+    const snap = await getDocs(collection(db, "tipsPeriods"));
+    snap.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (data.status === "submitted") submitted.add(data.payDate || docSnap.id);
+    });
+  } catch (err) {
+    // If this fails for some reason, fall back to the very first period
+    // rather than leaving the dropdown unset.
+  }
+  return PAY_PERIOD_DATES.find((dt) => !submitted.has(dt)) || PAY_PERIOD_DATES[PAY_PERIOD_DATES.length - 1];
+}
 
 // ---------- Driver rows ----------
 function addDriverRow(name = "", days = "") {

@@ -72,6 +72,15 @@
     font-size: 14px;
     font-family: inherit;
   }
+  select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--bg);
+  }
   .field { margin-bottom: 14px; }
   .money { background: var(--yellow); }
   .row { display: flex; gap: 12px; }
@@ -158,9 +167,9 @@
       <h2>Pay period</h2>
       <div class="field">
         <label for="payDate">Pay date for this 4-week tip period</label>
-        <input type="date" id="payDate" />
+        <select id="payDate"></select>
       </div>
-      <div class="small">Choosing a date loads that period if it already exists, or starts a new one.</div>
+      <div class="small">Starts on the next period that hasn't been submitted yet. Choosing a date loads that period if it already exists, or starts a new one.</div>
       <div id="periodStatus" style="margin-top:10px;"></div>
     </div>
 
