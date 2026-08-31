@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>GFG Tips Distribution — Input Form</title>
+<title>GFG Payroll</title>
 <style>
   :root {
     --ink: #1f2328;
@@ -43,7 +43,7 @@
     gap: 10px;
   }
   main {
-    max-width: 640px;
+    max-width: 680px;
     margin: 24px auto;
     padding: 0 16px 48px;
   }
@@ -108,8 +108,8 @@
   }
   button:disabled { opacity: 0.55; cursor: not-allowed; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 14px; }
-  th { color: var(--muted); font-weight: normal; font-size: 12px; text-transform: uppercase; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; }
   .net-pool {
     font-weight: bold;
     font-size: 16px;
@@ -132,12 +132,15 @@
   .status-pill.submitted { background: #d1f4dd; color: #1a7f37; }
   #loginCard { max-width: 360px; margin: 80px auto; }
   .small { font-size: 12px; color: var(--muted); }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+  .checkbox-row input[type=checkbox] { width: auto; }
+  .table-wrap { overflow-x: auto; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>GFG Tips Distribution</h1>
+  <h1>GFG Payroll</h1>
   <div id="whoami" class="hidden">
     <span id="whoamiText"></span>
     <button id="signOutBtn">Sign out</button>
@@ -176,6 +179,7 @@
 
     <div class="card" id="formCard">
       <h2>4-Week Tip Pool</h2>
+      <div class="small" style="margin-bottom:10px;">Larry normally enters this. Managers can fill in as backup if he's out.</div>
       <div class="field">
         <label for="totalRevenue">Total Tip Revenue (4-week period)</label>
         <input type="number" step="0.01" id="totalRevenue" class="money" />
@@ -210,8 +214,98 @@
       <div id="formMsg" class="msg"></div>
     </div>
 
+    <div class="card hidden" id="requestsCard">
+      <h2>PTO / Purchases / Deliveries / Reimbursements</h2>
+      <div class="small" style="margin-bottom:14px;">
+        Log a request against any employee here. It stays "pending" until
+        an Owner runs the Payroll Report and it gets swept into an actual
+        payroll calculation — at that point it's marked "on [pay date]"
+        below so everyone knows it's been handled.
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="reqType">Type</label>
+          <select id="reqType">
+            <option value="ptoRequests">PTO</option>
+            <option value="employeePurchases">Employee Purchase</option>
+            <option value="miscAmounts">Delivery / Misc Amount</option>
+            <option value="miscReimbursements">Reimbursement (grocery run, etc.)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="reqEmployee">Employee</label>
+          <select id="reqEmployee"></select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="reqAmount" id="reqAmountLabel">Hours</label>
+          <input type="number" step="0.01" id="reqAmount" />
+        </div>
+        <div class="field">
+          <label for="reqDate">Date</label>
+          <input type="date" id="reqDate" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="reqNote">Note (optional)</label>
+        <input type="text" id="reqNote" placeholder="e.g. what was purchased, or the reason" />
+      </div>
+      <button class="primary" id="reqSubmitBtn">Log it</button>
+      <div id="reqMsg" class="msg"></div>
+
+      <h2 style="margin-top:24px;">Pending (not yet on a payroll run)</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th>Entered by</th></tr></thead>
+          <tbody id="pendingRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card hidden" id="employeesCard">
+      <h2>Employees (Owner only)</h2>
+      <div class="small" style="margin-bottom:10px;">
+        This is the roster Managers pick from above, and what the Payroll
+        Report uses for department/rate/tip-eligibility.
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="empName">Name</label>
+          <input type="text" id="empName" />
+        </div>
+        <div class="field">
+          <label for="empDept">Department</label>
+          <input type="text" id="empDept" placeholder="k / o / 10-Mgt" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="empRate">Hourly rate</label>
+          <input type="number" step="0.01" id="empRate" />
+        </div>
+        <div class="field">
+          <label for="empTipEligible">Tip eligible?</label>
+          <select id="empTipEligible">
+            <option value="y">Yes</option>
+            <option value="n">No</option>
+          </select>
+        </div>
+      </div>
+      <button id="empSaveBtn">Save employee</button>
+      <div id="empMsg" class="msg"></div>
+      <div class="table-wrap" style="margin-top:16px;">
+        <table>
+          <thead><tr><th>Name</th><th>Dept</th><th>Rate</th><th>Tips?</th><th></th></tr></thead>
+          <tbody id="employeeRows"></tbody>
+        </table>
+      </div>
+      <button id="seedEmployeesBtn" style="margin-top:14px;">One-time: load starting roster</button>
+      <div id="seedMsg" class="msg small"></div>
+    </div>
+
     <div class="card hidden" id="adminCard">
-      <h2>All periods (admin)</h2>
+      <h2>All tip periods (Owner)</h2>
       <table>
         <thead><tr><th>Pay date</th><th>Status</th><th>Net pool</th><th></th></tr></thead>
         <tbody id="adminRows"></tbody>
@@ -219,21 +313,20 @@
     </div>
 
     <div class="card hidden" id="reportCard">
-      <h2>Payroll Report (admin only)</h2>
+      <h2>Payroll Report (Owner only)</h2>
       <div class="small" style="margin-bottom:14px;">
         Builds the full audit-trail workbook (daily punches &rarr; weekly hours
         &rarr; man-days/tips &rarr; deductions &rarr; ADP Entry) for the pay
-        period selected above, using that period's Total Tip Revenue / Bonnie
-        Brae / Swift / driver days from the form above, plus the two files you
-        upload here. Nothing on this card is visible to non-admin accounts.
+        period selected above, using that period's tip-pool numbers and every
+        currently-pending PTO/purchase/delivery/reimbursement request.
       </div>
       <div class="field">
         <label for="reportCsvFile">Raw timeclock export (Transaction Report .csv)</label>
         <input type="file" id="reportCsvFile" accept=".csv" />
       </div>
-      <div class="field">
-        <label for="reportTrackerFile">Employee Time Off Tracker (.xlsx)</label>
-        <input type="file" id="reportTrackerFile" accept=".xlsx" />
+      <div class="checkbox-row">
+        <input type="checkbox" id="reportFinalize" />
+        <label for="reportFinalize" style="margin:0;">Finalize this run — mark every request it uses as "on this pay date" (unchecked = preview only, nothing in Firestore changes)</label>
       </div>
       <button class="primary" id="generateReportBtn">Generate report</button>
       <div id="reportMsg" class="msg"></div>
@@ -243,16 +336,18 @@
         <div style="margin-bottom:14px;">
           <button id="downloadReportBtn">Download full report (.xlsx)</button>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Employee</th><th>Dept</th><th>Reg Hrs</th><th>OT Hrs</th>
-              <th>Man-Days</th><th>CC Tips</th><th>PTO</th><th>EE Purch</th>
-              <th>Misc Amt</th><th>Misc Reimb</th>
-            </tr>
-          </thead>
-          <tbody id="reportEmployeeRows"></tbody>
-        </table>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Employee</th><th>Dept</th><th>Reg Hrs</th><th>OT Hrs</th>
+                <th>Man-Days</th><th>CC Tips</th><th>PTO</th><th>EE Purch</th>
+                <th>Misc Amt</th><th>Misc Reimb</th>
+              </tr>
+            </thead>
+            <tbody id="reportEmployeeRows"></tbody>
+          </table>
+        </div>
         <h2 style="margin-top:18px;">1099 driver tip payouts</h2>
         <table>
           <thead><tr><th>Driver</th><th>Days driven</th><th>Tip payout</th></tr></thead>

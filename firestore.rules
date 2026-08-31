@@ -1,22 +1,36 @@
 rules_version = '2';
 
-// Two roles, stored in the `roles/{uid}` collection (one doc per user,
-// document ID = that user's Firebase Auth UID), each holding {role: "admin"}
-// or {role: "entry"}.
+// Three roles, stored in the `roles/{uid}` collection (one doc per user,
+// document ID = that user's Firebase Auth UID), each holding
+// {role: "admin"}, {role: "manager"}, or {role: "entry"}. The stored
+// string stays "admin" for Rod's account (unchanged from the original
+// 2-role version, so his already-live roles doc doesn't need editing) --
+// the app displays it as "Owner".
 //
-//   admin  (Rod) -- full read/write on every tipsPeriods document.
-//   entry  (Larry) -- can create a new period document and update/read
-//                     ONLY the one he's actively working on (status =
-//                     "open"). Once a period is marked "submitted" by
-//                     Larry, he can still read it but can no longer edit
-//                     it -- only an admin can re-open or correct it.
+//   admin   ("Owner" in the app -- Rod) -- everything: the tips form, all
+//           payroll requests, the employee roster, and Payroll Report
+//           generation.
+//   manager ("Manager" -- Mike, Thao) -- can log PTO/purchase/misc/
+//           reimbursement requests, can read the employee roster (to pick
+//           names from), and can use the tips form as backup for Larry
+//           (same submit-lock as entry: once a period is submitted, only
+//           an admin can go back and correct it).
+//   entry   ("Entry" -- Larry) -- tips form only.
 //
 // Nobody can read another user's `roles` doc except themselves and admins
-// (so Larry can't enumerate who has what role).
+// (so nobody can enumerate who has what role).
 //
-// There is nothing else in this Firebase project -- it holds ONLY tip
-// period submissions, on purpose, so Larry's account has no path to any
-// other GFG data (payroll, wages, tracker, etc. all stay local/Excel).
+// Every Cloud Function ALSO re-checks role against this same collection
+// via the Admin SDK, since an Admin SDK call bypasses these rules
+// entirely -- these rules alone would not stop a direct malicious call.
+//
+// Payroll requests (ptoRequests, employeePurchases, miscAmounts,
+// miscReimbursements) are a record that must be kept forever (per Rod,
+// 8/31/2026 -- EE withholding problems can surface long after the fact):
+// nobody can ever delete one, and once its payrollDate is stamped by a
+// Payroll Report run, it can never be edited again by anyone through
+// these rules -- a correction is a brand new record, not an edit to an
+// old one.
 
 function isSignedIn() {
   return request.auth != null;
@@ -32,8 +46,37 @@ function isAdmin() {
   return myRole() == 'admin';
 }
 
+function isManager() {
+  return myRole() == 'manager';
+}
+
 function isEntry() {
   return myRole() == 'entry';
+}
+
+function canUseTipsForm() {
+  return isAdmin() || isManager() || isEntry();
+}
+
+function canLogPayrollRequests() {
+  return isAdmin() || isManager();
+}
+
+// A request document is only ever create-then-optionally-corrected, never
+// truly deleted or altered once payrollDate is stamped. `unrecordedCreate`
+// enforces that a brand new record always starts unconsumed; `unrecordedEdit`
+// enforces that an edit to an unconsumed record can't sneak a payrollDate/
+// recordedAt/recordedBy value in directly (only generate_payroll_report,
+// running as Admin SDK and bypassing these rules, is allowed to set those).
+function unrecordedCreate() {
+  return request.resource.data.payrollDate == null
+    && request.resource.data.get('recordedAt', null) == null
+    && request.resource.data.get('recordedBy', null) == null;
+}
+
+function unrecordedEdit() {
+  return resource.data.payrollDate == null
+    && request.resource.data.payrollDate == null;
 }
 
 service cloud.firestore {
@@ -46,11 +89,44 @@ service cloud.firestore {
     }
 
     match /tipsPeriods/{periodId} {
-      allow read: if isAdmin() || (isEntry() && resource != null);
-      allow create: if isAdmin() || isEntry();
+      allow read: if isAdmin() || (canUseTipsForm() && resource != null);
+      allow create: if canUseTipsForm();
       allow update: if isAdmin()
-        || (isEntry() && resource.data.status == 'open');
+        || (canUseTipsForm() && resource.data.status == 'open');
       allow delete: if isAdmin();
+    }
+
+    match /employees/{employeeId} {
+      allow read: if isAdmin() || isManager();
+      allow write: if isAdmin();
+    }
+
+    match /ptoRequests/{id} {
+      allow read: if isAdmin() || isManager();
+      allow create: if canLogPayrollRequests() && unrecordedCreate();
+      allow update: if canLogPayrollRequests() && unrecordedEdit();
+      allow delete: if false;
+    }
+
+    match /employeePurchases/{id} {
+      allow read: if isAdmin() || isManager();
+      allow create: if canLogPayrollRequests() && unrecordedCreate();
+      allow update: if canLogPayrollRequests() && unrecordedEdit();
+      allow delete: if false;
+    }
+
+    match /miscAmounts/{id} {
+      allow read: if isAdmin() || isManager();
+      allow create: if canLogPayrollRequests() && unrecordedCreate();
+      allow update: if canLogPayrollRequests() && unrecordedEdit();
+      allow delete: if false;
+    }
+
+    match /miscReimbursements/{id} {
+      allow read: if isAdmin() || isManager();
+      allow create: if canLogPayrollRequests() && unrecordedCreate();
+      allow update: if canLogPayrollRequests() && unrecordedEdit();
+      allow delete: if false;
     }
   }
 }

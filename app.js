@@ -1,14 +1,18 @@
-// GFG Tips Distribution — input form.
+// GFG Payroll -- input form + payroll requests + employee roster + report.
 // Vanilla JS + Firebase (Auth + Firestore + Functions), same pattern as the
 // recipes.upshiftholdings.com app. No build step -- open index.html
 // (served over http/https, not file://) and go.
+//
+// Three roles, stored in Firestore as "admin" | "manager" | "entry" but
+// displayed as "Owner" | "Manager" | "Entry" (see main.py for why the
+// stored string didn't get renamed to match).
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, collection, getDocs, orderBy, query,
+  getFirestore, doc, getDoc, setDoc, addDoc, collection, getDocs, orderBy, query, where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getFunctions, httpsCallable,
@@ -20,6 +24,24 @@ const db = getFirestore(app);
 const functions = getFunctions(app);
 
 const DEFAULT_DRIVERS = ["Richard Haselton", "Ross Pullen", "Randy Pruitt"];
+
+const ROLE_LABELS = { admin: "Owner", manager: "Manager", entry: "Entry" };
+
+// Which collection each request type writes to, and which field holds its
+// amount (hours for PTO, dollars for everything else) -- must match the
+// four collections generate_payroll_report reads from in main.py.
+const REQ_LABELS = {
+  ptoRequests: { amountField: "hours", label: "Hours" },
+  employeePurchases: { amountField: "amount", label: "Amount ($)" },
+  miscAmounts: { amountField: "amount", label: "Amount ($)" },
+  miscReimbursements: { amountField: "amount", label: "Amount ($)" },
+};
+const REQ_TYPE_DISPLAY = {
+  ptoRequests: "PTO",
+  employeePurchases: "Employee Purchase",
+  miscAmounts: "Delivery / Misc",
+  miscReimbursements: "Reimbursement",
+};
 
 // Tips periods run every 4 weeks (every other biweekly pay period), always
 // on a Friday. First one is 4 weeks after the 8/28/2026 pay date; every
@@ -61,12 +83,13 @@ function formatPayDateLabel(dateStr) {
   });
 }
 
-let currentRole = null;   // "admin" | "entry" | null
+let currentRole = null;   // "admin" | "manager" | "entry" | null
 let currentPeriodId = null;
 let currentPeriodStatus = null;
 let periodDefaultChosen = false;
 let lastReportBase64 = null;
 let lastReportFilename = null;
+let employeesCache = [];  // [{id, name, department, rate, tipEligible}, ...]
 
 // ---------- DOM helpers ----------
 const $ = (id) => document.getElementById(id);
@@ -123,15 +146,29 @@ onAuthStateChanged(auth, async (user) => {
 
   const roleSnap = await getDoc(doc(db, "roles", user.uid));
   currentRole = roleSnap.exists() ? roleSnap.data().role : null;
-  $("whoamiText").textContent = `${user.email} (${currentRole || "no role assigned"})`;
+  const roleLabel = ROLE_LABELS[currentRole] || "no role assigned";
+  $("whoamiText").textContent = `${user.email} (${roleLabel})`;
 
   if (currentRole === "admin") {
     show($("adminCard"));
     show($("reportCard"));
+    show($("employeesCard"));
+    show($("requestsCard"));
     loadAdminList();
+    loadEmployees();
+    loadPendingRequests();
+  } else if (currentRole === "manager") {
+    hide($("adminCard"));
+    hide($("reportCard"));
+    hide($("employeesCard"));
+    show($("requestsCard"));
+    loadEmployees();
+    loadPendingRequests();
   } else {
     hide($("adminCard"));
     hide($("reportCard"));
+    hide($("employeesCard"));
+    hide($("requestsCard"));
   }
 
   if (!currentRole) {
@@ -244,9 +281,10 @@ function renderPeriodStatus() {
 }
 
 function applyEditLock() {
-  // Larry (entry role) can't edit a period once it's been submitted --
-  // only an admin can go back and correct it (matches firestore.rules).
-  const locked = currentRole === "entry" && currentPeriodStatus === "submitted";
+  // Larry (entry) and Mike/Thao (manager, using this as backup) can't edit
+  // a period once it's been submitted -- only the Owner can go back and
+  // correct it (matches firestore.rules).
+  const locked = (currentRole === "entry" || currentRole === "manager") && currentPeriodStatus === "submitted";
   [
     "totalRevenue", "bonnieBrae", "swift", "addDriverBtn", "saveDraftBtn", "submitBtn",
   ].forEach((id) => ($(id).disabled = locked));
@@ -288,7 +326,7 @@ async function savePeriod(status) {
 $("saveDraftBtn").addEventListener("click", () => savePeriod("open"));
 $("submitBtn").addEventListener("click", () => savePeriod("submitted"));
 
-// ---------- Admin: list of all periods ----------
+// ---------- Owner: list of all tip periods ----------
 async function loadAdminList() {
   const q = query(collection(db, "tipsPeriods"), orderBy("payDate", "desc"));
   const snap = await getDocs(q);
@@ -312,7 +350,198 @@ async function loadAdminList() {
   });
 }
 
-// ---------- Admin: Payroll Report ----------
+// ---------- Employees (roster) ----------
+async function loadEmployees() {
+  const q = query(collection(db, "employees"), orderBy("name"));
+  const snap = await getDocs(q);
+  employeesCache = [];
+  snap.forEach((d) => employeesCache.push({ id: d.id, ...d.data() }));
+  populateEmployeeDropdown();
+  renderEmployeeRows();
+}
+
+function populateEmployeeDropdown() {
+  const sel = $("reqEmployee");
+  const prevValue = sel.value;
+  sel.innerHTML = "";
+  employeesCache.forEach((e) => {
+    const opt = document.createElement("option");
+    opt.value = e.name;
+    opt.textContent = e.name;
+    sel.appendChild(opt);
+  });
+  if (prevValue && employeesCache.some((e) => e.name === prevValue)) sel.value = prevValue;
+}
+
+function renderEmployeeRows() {
+  const tbody = $("employeeRows");
+  tbody.innerHTML = "";
+  employeesCache.forEach((e) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${e.name}</td>
+      <td>${e.department || ""}</td>
+      <td>${e.rate != null ? Number(e.rate).toFixed(2) : ""}</td>
+      <td>${e.tipEligible ? "Yes" : "No"}</td>
+    `;
+    const editTd = document.createElement("td");
+    const editBtn = document.createElement("button");
+    editBtn.className = "link";
+    editBtn.type = "button";
+    editBtn.textContent = "edit";
+    editBtn.addEventListener("click", () => {
+      $("empName").value = e.name;
+      $("empDept").value = e.department || "";
+      $("empRate").value = e.rate != null ? e.rate : "";
+      $("empTipEligible").value = e.tipEligible ? "y" : "n";
+      $("employeesCard").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    editTd.appendChild(editBtn);
+    tr.appendChild(editTd);
+    tbody.appendChild(tr);
+  });
+}
+
+$("empSaveBtn").addEventListener("click", async () => {
+  setMsg($("empMsg"), "", "");
+  const name = $("empName").value.trim();
+  const department = $("empDept").value.trim();
+  const rateRaw = $("empRate").value;
+  const tipEligible = $("empTipEligible").value === "y";
+  if (!name) {
+    setMsg($("empMsg"), "Enter a name.", "error");
+    return;
+  }
+  try {
+    await setDoc(doc(db, "employees", name), {
+      name,
+      department,
+      rate: rateRaw !== "" ? Number(rateRaw) : null,
+      tipEligible,
+    }, { merge: true });
+    setMsg($("empMsg"), "Saved.", "ok");
+    $("empName").value = "";
+    $("empDept").value = "";
+    $("empRate").value = "";
+    $("empTipEligible").value = "y";
+    loadEmployees();
+  } catch (err) {
+    setMsg($("empMsg"), "Save failed: " + err.message, "error");
+  }
+});
+
+$("seedEmployeesBtn").addEventListener("click", async () => {
+  setMsg($("seedMsg"), "Loading starting roster...", "");
+  $("seedEmployeesBtn").disabled = true;
+  try {
+    const call = httpsCallable(functions, "seed_employees");
+    const res = await call({});
+    setMsg($("seedMsg"), `Seeded ${res.data.seeded} employees.`, "ok");
+    loadEmployees();
+  } catch (err) {
+    setMsg($("seedMsg"), "Failed: " + err.message, "error");
+  } finally {
+    $("seedEmployeesBtn").disabled = false;
+  }
+});
+
+// ---------- Payroll requests (PTO / purchases / misc / reimbursements) ----------
+function updateReqAmountLabel() {
+  const info = REQ_LABELS[$("reqType").value];
+  $("reqAmountLabel").textContent = info.label;
+}
+$("reqType").addEventListener("change", updateReqAmountLabel);
+updateReqAmountLabel();
+
+// Default the date picker to today, as a convenience.
+$("reqDate").value = new Date().toISOString().slice(0, 10);
+
+$("reqSubmitBtn").addEventListener("click", async () => {
+  setMsg($("reqMsg"), "", "");
+  const type = $("reqType").value;
+  const info = REQ_LABELS[type];
+  const employeeName = $("reqEmployee").value;
+  const amount = Number($("reqAmount").value);
+  const date = $("reqDate").value;
+  const note = $("reqNote").value.trim();
+
+  if (!employeeName) {
+    setMsg($("reqMsg"), "Choose an employee -- if the list is empty, ask Rod to add employees first.", "error");
+    return;
+  }
+  if (!amount || amount <= 0) {
+    setMsg($("reqMsg"), `Enter a positive ${info.label.toLowerCase()}.`, "error");
+    return;
+  }
+  if (!date) {
+    setMsg($("reqMsg"), "Pick a date.", "error");
+    return;
+  }
+
+  $("reqSubmitBtn").disabled = true;
+  try {
+    await addDoc(collection(db, type), {
+      employeeName,
+      [info.amountField]: amount,
+      date,
+      note: note || null,
+      enteredBy: auth.currentUser.email,
+      enteredAt: new Date().toISOString(),
+      payrollDate: null,
+      recordedAt: null,
+      recordedBy: null,
+    });
+    setMsg($("reqMsg"), "Logged.", "ok");
+    $("reqAmount").value = "";
+    $("reqNote").value = "";
+    loadPendingRequests();
+  } catch (err) {
+    setMsg($("reqMsg"), "Couldn't log it: " + err.message, "error");
+  } finally {
+    $("reqSubmitBtn").disabled = false;
+  }
+});
+
+async function loadPendingRequests() {
+  const allRows = [];
+  for (const type of Object.keys(REQ_LABELS)) {
+    const info = REQ_LABELS[type];
+    const q = query(collection(db, type), where("payrollDate", "==", null));
+    const snap = await getDocs(q);
+    snap.forEach((d) => {
+      const data = d.data();
+      allRows.push({
+        type,
+        employeeName: data.employeeName,
+        amount: data[info.amountField],
+        date: data.date,
+        note: data.note,
+        enteredBy: data.enteredBy,
+      });
+    });
+  }
+  allRows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  const tbody = $("pendingRows");
+  tbody.innerHTML = "";
+  allRows.forEach((r) => {
+    const tr = document.createElement("tr");
+    const amtDisplay = r.type === "ptoRequests"
+      ? (Number(r.amount) || 0).toFixed(2)
+      : money(r.amount);
+    tr.innerHTML = `
+      <td>${REQ_TYPE_DISPLAY[r.type]}</td>
+      <td>${r.employeeName}</td>
+      <td>${amtDisplay}</td>
+      <td>${r.date || ""}</td>
+      <td>${r.note || ""}</td>
+      <td>${r.enteredBy || ""}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ---------- Owner: Payroll Report ----------
 function readFileAsBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -337,29 +566,29 @@ $("generateReportBtn").addEventListener("click", async () => {
     return;
   }
   const csvFile = $("reportCsvFile").files[0];
-  const trackerFile = $("reportTrackerFile").files[0];
-  if (!csvFile || !trackerFile) {
-    setMsg($("reportMsg"), "Choose both the raw timeclock CSV and the tracker workbook.", "error");
+  if (!csvFile) {
+    setMsg($("reportMsg"), "Choose the raw timeclock CSV.", "error");
     return;
   }
+  const finalize = $("reportFinalize").checked;
 
   $("generateReportBtn").disabled = true;
   setMsg($("reportMsg"), "Generating report... this can take a few seconds.", "");
   try {
-    const [csvBase64, trackerBase64] = await Promise.all([
-      readFileAsBase64(csvFile),
-      readFileAsBase64(trackerFile),
-    ]);
+    const csvBase64 = await readFileAsBase64(csvFile);
     const call = httpsCallable(functions, "generate_payroll_report");
     const res = await call({
       payPeriodId: currentPeriodId,
       csvFilename: csvFile.name,
       csvBase64,
-      trackerFilename: trackerFile.name,
-      trackerBase64,
+      finalize,
     });
     renderReport(res.data);
-    setMsg($("reportMsg"), "Report generated.", "ok");
+    const followUp = res.data.finalized
+      ? ` ${res.data.finalizedCount} pending request(s) marked "on ${currentPeriodId}."`
+      : " Preview only -- nothing in Firestore changed. Check the box above and re-run to finalize.";
+    setMsg($("reportMsg"), "Report generated." + followUp, "ok");
+    if (res.data.finalized) loadPendingRequests();
   } catch (err) {
     setMsg($("reportMsg"), "Couldn't generate the report: " + err.message, "error");
   } finally {

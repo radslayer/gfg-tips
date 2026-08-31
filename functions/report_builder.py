@@ -1,19 +1,23 @@
 """
-report_builder.py — the payroll-report calculation + workbook-build logic,
-ported from timeclock_to_adp.py and report_build/build_report.py so it can
-run inside a Cloud Function against uploaded file bytes instead of local
-paths.
+report_builder.py — the payroll-report calculation + workbook-build logic
+for the GFG Payroll admin report page.
 
-SCOPE NOTE (deliberately simple, per Rod 8/31/2026): tip allocation here
-uses ONLY the man-days computed from the single uploaded raw timeclock CSV
-for this pay period — the same pro-rata-by-man-days math already coded in
-timeclock_to_adp.py's allocate_tips(), extended to also include the 3
-1099 drivers (flat 1.0 day credit each, from the tipsPeriods Firestore
-doc) in the same pool. This is NOT yet the fully-proven 4-week / two-
-pay-period rolling window (that model is proven correct — see the
-"GFG Tips Distribution pressure test" section of the project doc — but
-needs a persisted man-days history across periods that hasn't been built
-yet). The report says so explicitly on the Man-Days & Tips Calc sheet.
+v2 (8/31/2026): deductions (PTO / Employee Purchases / Misc Amount /
+Misc Reimbursement) now come from live Firestore records instead of an
+uploaded Employee Time Off Tracker workbook -- Mike and Thao (manager
+role) log these directly in the app, and this report sweeps up every
+not-yet-processed record and (when finalize=True, decided by the
+caller/main.py) marks it processed with this pay date. See main.py for
+the Firestore read/write side; this module only builds the workbook and
+summary from data it's handed.
+
+SCOPE NOTE (unchanged from v1, per Rod 8/31/2026): tip allocation uses
+ONLY the man-days computed from the single uploaded raw timeclock CSV
+for this pay period -- not yet the fully-proven 4-week/2-pay-period
+rolling window (that model is proven correct -- see the project doc --
+but needs a persisted man-days history across periods that hasn't been
+built yet). The report says so explicitly on the Man-Days & Tips Calc
+sheet.
 """
 import csv
 import io
@@ -23,7 +27,6 @@ from datetime import datetime, timedelta
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.comments import Comment
 
 # ---------------------------------------------------------------------------
 # Constants (identical to timeclock_to_adp.py)
@@ -97,7 +100,7 @@ class ReportError(Exception):
 def parse_raw_export_text(text):
     records = []
     reader = csv.reader(io.StringIO(text))
-    for row_num, row in enumerate(reader, start=1):
+    for row in reader:
         if len(row) <= CSV_COL_TRANS_TTL:
             continue
         name = row[CSV_COL_NAME].strip()
@@ -143,21 +146,6 @@ def man_days_for_hours(hours):
     if hours > 0:
         return MAN_DAY_HALF_CREDIT
     return 0.0
-
-
-def load_employee_config_text(text):
-    employees = {}
-    order = []
-    for row in csv.DictReader(io.StringIO(text)):
-        name = row["name"].strip()
-        rate_raw = (row.get("rate") or "").strip()
-        employees[name] = {
-            "department": row["department"].strip(),
-            "rate": float(rate_raw) if rate_raw else None,
-            "tip_eligible": row["tip_eligible"].strip().lower() == "y",
-        }
-        order.append(name)
-    return employees, order
 
 
 def compute_hours_and_wages(records, employees):
@@ -232,98 +220,6 @@ def allocate_tips_with_drivers(computed, employees, net_pool, driver_days):
 
 
 # ---------------------------------------------------------------------------
-# Tracker extraction (Time Off / Employee Purchases / Misc Amt / Misc Reimb)
-# READ-ONLY: never marks anything "recorded" -- this is a reporting tool,
-# not the official production run (that stays the local script Rod runs).
-# Any tracker name that isn't an exact employee_config.csv match is
-# reported back as "unresolved" rather than guessed at.
-# ---------------------------------------------------------------------------
-def _same_day(cell_value, pay_date):
-    return isinstance(cell_value, datetime) and cell_value.date() == pay_date.date()
-
-
-def extract_time_off(wb, pay_date, employees):
-    ws = wb["Time Off"]
-    hours_by_name = defaultdict(float)
-    unresolved = []
-    for r in range(2, ws.max_row + 1):
-        raw_name = ws.cell(row=r, column=1).value
-        pay_col = ws.cell(row=r, column=9).value
-        recorded = ws.cell(row=r, column=10).value
-        hours = ws.cell(row=r, column=4).value
-        if not raw_name or not isinstance(raw_name, str) or not _same_day(pay_col, pay_date):
-            continue
-        if recorded or not isinstance(hours, (int, float)):
-            continue
-        name = raw_name.strip()
-        if name not in employees:
-            unresolved.append(("Time Off", r, name))
-            continue
-        hours_by_name[name] += hours
-    return dict(hours_by_name), unresolved
-
-
-def extract_employee_purchases(wb, pay_date, employees):
-    ws = wb["Employee Purchases (click name)"]
-    amt_by_name = defaultdict(float)
-    unresolved = []
-    for r in range(2, ws.max_row + 1):
-        raw_name = ws.cell(row=r, column=2).value
-        pay_col = ws.cell(row=r, column=7).value
-        amt = ws.cell(row=r, column=6).value
-        if not raw_name or not isinstance(raw_name, str) or not _same_day(pay_col, pay_date):
-            continue
-        if not isinstance(amt, (int, float)):
-            continue
-        name = raw_name.strip()
-        if name not in employees:
-            unresolved.append(("Employee Purchases", r, name))
-            continue
-        amt_by_name[name] += amt
-    return dict(amt_by_name), unresolved
-
-
-def extract_misc_amt(wb, pay_date, employees):
-    ws = wb["Misc Amt (taxed)"]
-    amt_by_name = defaultdict(float)
-    unresolved = []
-    for r in range(2, ws.max_row + 1):
-        raw_name = ws.cell(row=r, column=1).value
-        target = ws.cell(row=r, column=5).value
-        amt = ws.cell(row=r, column=3).value
-        if not raw_name or not isinstance(raw_name, str) or not _same_day(target, pay_date):
-            continue
-        if not isinstance(amt, (int, float)):
-            continue
-        name = raw_name.strip()
-        if name not in employees:
-            unresolved.append(("Misc Amt", r, name))
-            continue
-        amt_by_name[name] += amt
-    return dict(amt_by_name), unresolved
-
-
-def extract_misc_reimb(wb, pay_date, employees):
-    ws = wb["Misc Reimb (non taxed)"]
-    amt_by_name = defaultdict(float)
-    unresolved = []
-    for r in range(2, ws.max_row + 1):
-        raw_name = ws.cell(row=r, column=1).value
-        target = ws.cell(row=r, column=5).value
-        amt = ws.cell(row=r, column=3).value
-        if not raw_name or not isinstance(raw_name, str) or not _same_day(target, pay_date):
-            continue
-        if not isinstance(amt, (int, float)):
-            continue
-        name = raw_name.strip()
-        if name not in employees:
-            unresolved.append(("Misc Reimb", r, name))
-            continue
-        amt_by_name[name] += amt
-    return dict(amt_by_name), unresolved
-
-
-# ---------------------------------------------------------------------------
 # Workbook build
 # ---------------------------------------------------------------------------
 def title_block(ws, title, source_lines):
@@ -358,12 +254,27 @@ def autosize(ws, min_width=9, max_width=42):
         ws.column_dimensions[col].width = w
 
 
-def build_report(csv_text, tracker_bytes, employee_config_text, pay_date,
-                  raw_csv_name, tracker_name, total_tip_revenue, bonnie_brae,
-                  swift, driver_days):
-    """Returns (workbook_bytes: bytes, summary: dict, warnings: list[str])."""
+def build_report(csv_text, employees, order, pay_date, raw_csv_name,
+                  total_tip_revenue, bonnie_brae, swift, driver_days,
+                  pending_pto, pending_purchases, pending_misc_amt,
+                  pending_misc_reimb):
+    """employees/order: same shape as before (dict name -> {department,
+    rate, tip_eligible}, plus the name order list).
+
+    pending_* : lists of dicts, each {"id": <firestore doc id>,
+    "employeeName": ..., "hours"/"amount": ..., ...} -- every currently
+    unprocessed record from that Firestore collection, handed in by
+    main.py. This function does not touch Firestore itself; it just
+    aggregates per employee for the workbook and tells the caller (via
+    consumed_ids in the return value) which record ids it used, so
+    main.py can stamp them processed -- but only if the caller chooses
+    to finalize (see main.py).
+
+    Returns (workbook_bytes, summary, warnings, consumed_ids) where
+    consumed_ids is {"ptoRequests": [id, ...], "employeePurchases": [...],
+    "miscAmounts": [...], "miscReimbursements": [...]}.
+    """
     warnings = []
-    employees, order = load_employee_config_text(employee_config_text)
     records = parse_raw_export_text(csv_text)
     computed, unknown_names, all_dates = compute_hours_and_wages(records, employees)
     if unknown_names:
@@ -375,18 +286,36 @@ def build_report(csv_text, tracker_bytes, employee_config_text, pay_date,
     net_pool = round(total_tip_revenue - bonnie_brae - swift, 2)
     w2_tips, driver_tips = allocate_tips_with_drivers(computed, employees, net_pool, driver_days)
 
-    tracker_wb = openpyxl.load_workbook(io.BytesIO(tracker_bytes))
-    pto_hours, u1 = extract_time_off(tracker_wb, pay_date, employees)
-    ee_purchases, u2 = extract_employee_purchases(tracker_wb, pay_date, employees)
-    misc_amt, u3 = extract_misc_amt(tracker_wb, pay_date, employees)
-    misc_reimb, u4 = extract_misc_reimb(tracker_wb, pay_date, employees)
-    unresolved = u1 + u2 + u3 + u4
-    if unresolved:
+    def sum_by_employee(records_list, amount_field, known_names):
+        totals = defaultdict(float)
+        consumed_ids = []
+        unresolved = []
+        for r in records_list:
+            name = (r.get("employeeName") or "").strip()
+            amt = r.get(amount_field)
+            if not name or not isinstance(amt, (int, float)):
+                continue
+            if name not in known_names:
+                unresolved.append(name)
+                continue
+            totals[name] += amt
+            consumed_ids.append(r["id"])
+        return dict(totals), consumed_ids, unresolved
+
+    pto_hours, pto_ids, u1 = sum_by_employee(pending_pto, "hours", employees)
+    ee_purchases, purch_ids, u2 = sum_by_employee(pending_purchases, "amount", employees)
+    misc_amt, misc_amt_ids, u3 = sum_by_employee(pending_misc_amt, "amount", employees)
+    misc_reimb, misc_reimb_ids, u4 = sum_by_employee(pending_misc_reimb, "amount", employees)
+    unresolved_names = sorted(set(u1) | set(u2) | set(u3) | set(u4))
+    if unresolved_names:
         warnings.append(
-            "These tracker rows are for this pay date but the name doesn't "
-            "exactly match employee_config.csv, so they're NOT included: " +
-            "; ".join(f"{sheet} row {row} ('{name}')" for sheet, row, name in unresolved)
+            "These pending requests reference a name that isn't in the "
+            "employee list, so they're NOT included: " + ", ".join(unresolved_names)
         )
+    consumed_ids = {
+        "ptoRequests": pto_ids, "employeePurchases": purch_ids,
+        "miscAmounts": misc_amt_ids, "miscReimbursements": misc_reimb_ids,
+    }
 
     # -------- daily records for Sheet 1 --------
     daily_hours = defaultdict(float)
@@ -415,7 +344,7 @@ def build_report(csv_text, tracker_bytes, employee_config_text, pay_date,
     # ---- Sheet 0: Employee Config ----
     ws0 = wb.create_sheet("0 - Employee Config")
     r0 = title_block(ws0, "Employee Config", [
-        "Source: employee_config.csv (carried-forward wage/department table).",
+        "Source: the 'employees' collection (Firestore), maintained by the Owner.",
         "Blue = source input. Every other sheet looks up rate/department/tip-eligibility from here.",
     ])
     for i, h in enumerate(["Employee", "Department", "Hourly Rate", "Tip Eligible?"], start=1):
@@ -543,8 +472,8 @@ def build_report(csv_text, tracker_bytes, employee_config_text, pay_date,
         "SIMPLIFIED MODEL: days worked are computed from THIS UPLOAD ONLY (one pay period's raw timeclock",
         "export), not the fully-proven 4-week/2-pay-period rolling window (that model is proven correct but",
         "needs a persisted man-days history across periods, not yet built -- ask Rod/Claude to add it).",
-        "1099 driver day-counts come from the tips web form (Larry). Drivers get a flat 1.0 credit per day",
-        "driven -- never the 0.5-short-day rule that applies to W2 employees.",
+        "1099 driver day-counts come from the tips web form (Larry, or a Manager filling in for him). Drivers",
+        "get a flat 1.0 credit per day driven -- never the 0.5-short-day rule that applies to W2 employees.",
         "Share = a person's Days / everyone's combined Days (W2 tip-eligible + all drivers, same pool).",
         "Tip $ = Share x Net Pool. Sam Gray is excluded from any share regardless of days worked.",
     ])
@@ -627,8 +556,8 @@ def build_report(csv_text, tracker_bytes, employee_config_text, pay_date,
     # ---- Sheet 4: Deductions ----
     ws4 = wb.create_sheet("4 - Deductions")
     r4 = title_block(ws4, "Deductions (PTO / Purchases / Misc / S-Corp)", [
-        f"Source: {tracker_name} (Employee Time Off Tracker), rows dated for this pay period.",
-        "Read-only extraction -- generating this report does NOT mark any tracker row as recorded.",
+        "Source: pending requests logged in the app by a Manager or the Owner (PTO / Employee",
+        "Purchases / Misc Amount / Misc Reimbursement collections), swept up as of this report run.",
     ])
     headers4 = ["Employee", "PTO Hours", "EE Purchases", "Misc Amount (deliveries)",
                 "Misc Reimburse (grocery runs)"]
@@ -730,8 +659,7 @@ def build_report(csv_text, tracker_bytes, employee_config_text, pay_date,
     if driver_days:
         ws6 = wb.create_sheet("Driver Tip Payouts (1099s)")
         r6 = title_block(ws6, "Driver Tip Payouts", [
-            "Not part of ADP Entry -- 1099 contractors aren't payroll. Pulled from "
-            + TIPS_SHEET + ".",
+            "Not part of ADP Entry -- 1099 contractors aren't payroll. Pulled from " + TIPS_SHEET + ".",
         ])
         for i, h in enumerate(["Driver", "Days Driven", "Tip $ Payout"], start=1):
             ws6.cell(row=r6, column=i, value=h)
@@ -776,4 +704,4 @@ def build_report(csv_text, tracker_bytes, employee_config_text, pay_date,
         ],
         "warnings": warnings,
     }
-    return buf.read(), summary, warnings
+    return buf.read(), summary, warnings, consumed_ids
