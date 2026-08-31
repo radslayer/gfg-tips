@@ -1,5 +1,5 @@
 // GFG Tips Distribution — input form.
-// Vanilla JS + Firebase (Auth + Firestore), same pattern as the
+// Vanilla JS + Firebase (Auth + Firestore + Functions), same pattern as the
 // recipes.upshiftholdings.com app. No build step -- open index.html
 // (served over http/https, not file://) and go.
 
@@ -10,10 +10,14 @@ import {
 import {
   getFirestore, doc, getDoc, setDoc, collection, getDocs, orderBy, query,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getFunctions, httpsCallable,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 
 const app = initializeApp(window.FIREBASE_CONFIG);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const functions = getFunctions(app);
 
 const DEFAULT_DRIVERS = ["Richard Haselton", "Ross Pullen", "Randy Pruitt"];
 
@@ -61,6 +65,8 @@ let currentRole = null;   // "admin" | "entry" | null
 let currentPeriodId = null;
 let currentPeriodStatus = null;
 let periodDefaultChosen = false;
+let lastReportBase64 = null;
+let lastReportFilename = null;
 
 // ---------- DOM helpers ----------
 const $ = (id) => document.getElementById(id);
@@ -121,9 +127,11 @@ onAuthStateChanged(auth, async (user) => {
 
   if (currentRole === "admin") {
     show($("adminCard"));
+    show($("reportCard"));
     loadAdminList();
   } else {
     hide($("adminCard"));
+    hide($("reportCard"));
   }
 
   if (!currentRole) {
@@ -205,6 +213,8 @@ async function loadPeriod(payDate) {
   if (!payDate) return;
   currentPeriodId = payDate;
   setMsg($("formMsg"), "", "");
+  hide($("reportResults"));
+  setMsg($("reportMsg"), "", "");
   const snap = await getDoc(doc(db, "tipsPeriods", currentPeriodId));
   if (snap.exists()) {
     const d = snap.data();
@@ -301,3 +311,116 @@ async function loadAdminList() {
     $("adminRows").appendChild(tr);
   });
 }
+
+// ---------- Admin: Payroll Report ----------
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // reader.result is "data:<mime>;base64,<data>" -- strip the prefix.
+      const commaIdx = reader.result.indexOf(",");
+      resolve(reader.result.slice(commaIdx + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+$("generateReportBtn").addEventListener("click", async () => {
+  setMsg($("reportMsg"), "", "");
+  hide($("reportResults"));
+  lastReportBase64 = null;
+  lastReportFilename = null;
+
+  if (!currentPeriodId) {
+    setMsg($("reportMsg"), "Pick a pay period above first.", "error");
+    return;
+  }
+  const csvFile = $("reportCsvFile").files[0];
+  const trackerFile = $("reportTrackerFile").files[0];
+  if (!csvFile || !trackerFile) {
+    setMsg($("reportMsg"), "Choose both the raw timeclock CSV and the tracker workbook.", "error");
+    return;
+  }
+
+  $("generateReportBtn").disabled = true;
+  setMsg($("reportMsg"), "Generating report... this can take a few seconds.", "");
+  try {
+    const [csvBase64, trackerBase64] = await Promise.all([
+      readFileAsBase64(csvFile),
+      readFileAsBase64(trackerFile),
+    ]);
+    const call = httpsCallable(functions, "generate_payroll_report");
+    const res = await call({
+      payPeriodId: currentPeriodId,
+      csvFilename: csvFile.name,
+      csvBase64,
+      trackerFilename: trackerFile.name,
+      trackerBase64,
+    });
+    renderReport(res.data);
+    setMsg($("reportMsg"), "Report generated.", "ok");
+  } catch (err) {
+    setMsg($("reportMsg"), "Couldn't generate the report: " + err.message, "error");
+  } finally {
+    $("generateReportBtn").disabled = false;
+  }
+});
+
+function renderReport(data) {
+  const { summary, warnings, reportBase64, reportFilename } = data;
+  lastReportBase64 = reportBase64;
+  lastReportFilename = reportFilename;
+
+  const warnEl = $("reportWarnings");
+  if (warnings && warnings.length) {
+    warnEl.textContent = warnings.join(" ");
+    show(warnEl);
+  } else {
+    warnEl.textContent = "";
+    hide(warnEl);
+  }
+
+  const empRows = $("reportEmployeeRows");
+  empRows.innerHTML = "";
+  (summary.employees || []).forEach((e) => {
+    const tr = document.createElement("tr");
+    const fmt = (v) => (v === null || v === undefined ? "" : (typeof v === "number" ? v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : v));
+    tr.innerHTML = `
+      <td>${e.name}</td><td>${e.department}</td><td>${fmt(e.regularHours)}</td>
+      <td>${fmt(e.otHours)}</td><td>${fmt(e.manDays)}</td><td>${fmt(e.ccTipsOwed)}</td>
+      <td>${fmt(e.ptoHours)}</td><td>${fmt(e.eePurchases)}</td>
+      <td>${fmt(e.miscAmount)}</td><td>${fmt(e.miscReimburse)}</td>
+    `;
+    empRows.appendChild(tr);
+  });
+
+  const drvRows = $("reportDriverRows");
+  drvRows.innerHTML = "";
+  (summary.drivers || []).forEach((d) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${d.name}</td><td>${d.daysDriven}</td><td>${money(d.tipPayout)}</td>`;
+    drvRows.appendChild(tr);
+  });
+
+  show($("reportResults"));
+}
+
+$("downloadReportBtn").addEventListener("click", () => {
+  if (!lastReportBase64) return;
+  const byteChars = atob(lastReportBase64);
+  const byteNumbers = new Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+  const byteArray = new Uint8Array(byteNumbers);
+  const blob = new Blob([byteArray], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = lastReportFilename || "Payroll Calculation Report.xlsx";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});

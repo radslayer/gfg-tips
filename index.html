@@ -64,7 +64,7 @@
     color: var(--muted);
     margin-bottom: 4px;
   }
-  input[type=text], input[type=email], input[type=password], input[type=number], input[type=date] {
+  input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], input[type=file] {
     width: 100%;
     padding: 8px 10px;
     border: 1px solid var(--border);
@@ -106,6 +106,7 @@
     padding: 0;
     text-decoration: underline;
   }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 14px; }
   th { color: var(--muted); font-weight: normal; font-size: 12px; text-transform: uppercase; }
@@ -215,6 +216,49 @@
         <thead><tr><th>Pay date</th><th>Status</th><th>Net pool</th><th></th></tr></thead>
         <tbody id="adminRows"></tbody>
       </table>
+    </div>
+
+    <div class="card hidden" id="reportCard">
+      <h2>Payroll Report (admin only)</h2>
+      <div class="small" style="margin-bottom:14px;">
+        Builds the full audit-trail workbook (daily punches &rarr; weekly hours
+        &rarr; man-days/tips &rarr; deductions &rarr; ADP Entry) for the pay
+        period selected above, using that period's Total Tip Revenue / Bonnie
+        Brae / Swift / driver days from the form above, plus the two files you
+        upload here. Nothing on this card is visible to non-admin accounts.
+      </div>
+      <div class="field">
+        <label for="reportCsvFile">Raw timeclock export (Transaction Report .csv)</label>
+        <input type="file" id="reportCsvFile" accept=".csv" />
+      </div>
+      <div class="field">
+        <label for="reportTrackerFile">Employee Time Off Tracker (.xlsx)</label>
+        <input type="file" id="reportTrackerFile" accept=".xlsx" />
+      </div>
+      <button class="primary" id="generateReportBtn">Generate report</button>
+      <div id="reportMsg" class="msg"></div>
+
+      <div id="reportResults" class="hidden" style="margin-top:20px;">
+        <div id="reportWarnings" class="msg error" style="margin-bottom:10px;"></div>
+        <div style="margin-bottom:14px;">
+          <button id="downloadReportBtn">Download full report (.xlsx)</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Employee</th><th>Dept</th><th>Reg Hrs</th><th>OT Hrs</th>
+              <th>Man-Days</th><th>CC Tips</th><th>PTO</th><th>EE Purch</th>
+              <th>Misc Amt</th><th>Misc Reimb</th>
+            </tr>
+          </thead>
+          <tbody id="reportEmployeeRows"></tbody>
+        </table>
+        <h2 style="margin-top:18px;">1099 driver tip payouts</h2>
+        <table>
+          <thead><tr><th>Driver</th><th>Days driven</th><th>Tip payout</th></tr></thead>
+          <tbody id="reportDriverRows"></tbody>
+        </table>
+      </div>
     </div>
 
   </div>
