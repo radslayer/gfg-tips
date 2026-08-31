@@ -95,6 +95,198 @@ class ReportError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Thao's automatic PTO makeup for short weeks (ported from timeclock_to_adp.py)
+# ---------------------------------------------------------------------------
+THAO_NAME = "Thao Nguyen"
+
+
+def thao_pto_makeup_hours(records, thao_name, weekly_target=OT_THRESHOLD_HOURS):
+    """Per Rod: Thao is expected to work ~40 hrs/week, and if a workweek in
+    this pay period comes up short, the difference is made up out of her
+    PTO balance. Evaluated independently PER WORKWEEK -- a week that runs
+    over 40 does NOT offset a different week's shortfall (confirmed with
+    Rod: 45 hrs week 1 / 30 hrs week 2 -> 0 PTO for week 1, 10 PTO for
+    week 2, not a single "80 hrs for the period" check).
+
+    Only counts a week where she has SOME clocked hours but less than the
+    target -- a week with zero punches at all is assumed to already be an
+    actual approved time-off request (a manually-logged PTO request in
+    Firestore), so this doesn't double-add PTO on top of that. Uses the
+    same paid-hours basis (punches + paid-break minutes on days with >2
+    punches) as the Regular/OT split above, so "short" here means the
+    same thing it means on her Regular Hours cell.
+
+    Returns (total_makeup_hours, [(week_start_date, hours_worked,
+    hours_added), ...]) -- the list only has entries for weeks that were
+    actually short. `records` should be the post-sister-company-folding
+    records, so a week where her hours are combined with an alias is
+    evaluated on her true combined total.
+    """
+    all_dates = sorted({d for _, d, _ in records})
+    if not all_dates:
+        return 0.0, []
+    pay_period_weeks = sorted({week_start(d) for d in all_dates})
+
+    daily_hours = defaultdict(float)
+    daily_count = defaultdict(int)
+    for name, date, amt in records:
+        if name != thao_name:
+            continue
+        daily_hours[date] += amt
+        daily_count[date] += 1
+
+    week_worked = defaultdict(float)
+    for date, hrs in daily_hours.items():
+        paid = hrs
+        if daily_count[date] > 2:
+            paid += break_minutes_for_hours(hrs) / 60.0
+        week_worked[week_start(date)] += paid
+
+    makeup = 0.0
+    shortfalls = []
+    for wk in pay_period_weeks:
+        worked = round(week_worked.get(wk, 0.0), 4)
+        if 0 < worked < weekly_target:
+            added = round(weekly_target - worked, 2)
+            makeup += added
+            shortfalls.append((wk, worked, added))
+    return round(makeup, 2), shortfalls
+
+
+# ---------------------------------------------------------------------------
+# Rod's 2% S-Corp Medical (ported from timeclock_to_adp.py)
+# ---------------------------------------------------------------------------
+ROD_ROW_NAME = "Rod"
+# A confirmed real ADP pay date (a Friday). Every biweekly pay date is
+# exactly a multiple of 14 days from this one -- used to tell which
+# calendar-month pay period a run is (1st/2nd/3rd) for the rule below.
+PAY_DATE_ANCHOR = datetime(2026, 7, 17)
+ROD_MEDICAL_AMOUNT = 677.12       # every pay period...
+ROD_MEDICAL_THIRD_PERIOD = 0.0    # ...EXCEPT the 3rd biweekly pay date in a calendar month
+
+
+def is_pay_date(d):
+    return (d.date() - PAY_DATE_ANCHOR.date()).days % 14 == 0
+
+
+def nth_pay_period_of_month(pay_date):
+    """Which biweekly pay date this is within its calendar month (1, 2, or
+    3 -- most months get 2, some get 3, under the fixed 14-day cadence).
+    Returns None if pay_date itself doesn't line up with that cadence at
+    all (shouldn't happen for a pay date picked from the app's dropdown)."""
+    first_of_month = pay_date.replace(day=1)
+    next_month = (datetime(first_of_month.year + 1, 1, 1) if first_of_month.month == 12
+                  else datetime(first_of_month.year, first_of_month.month + 1, 1))
+    count = 0
+    found = None
+    d = first_of_month
+    while d < next_month:
+        if is_pay_date(d):
+            count += 1
+            if d.date() == pay_date.date():
+                found = count
+        d += timedelta(days=1)
+    return found
+
+
+def rod_medical_amount(pay_date):
+    """Returns (amount, nth) -- nth is None if pay_date doesn't match the
+    known biweekly cadence, in which case the caller should leave the
+    amount blank for manual entry rather than guess."""
+    nth = nth_pay_period_of_month(pay_date)
+    if nth is None:
+        return None, None
+    return (ROD_MEDICAL_THIRD_PERIOD if nth == 3 else ROD_MEDICAL_AMOUNT), nth
+
+
+# ---------------------------------------------------------------------------
+# Sister-company (e.g. Easy Entrées) hours folding + earnout pivot
+# (ported from timeclock_to_adp.py)
+# ---------------------------------------------------------------------------
+def apply_entity_map(records, sister_map):
+    """Returns mapped_records: the same (name, date, amt) records, but with
+    any sister-company alias name replaced by its canonical employee name
+    -- this is what gets fed into compute_hours_and_wages so OT, breaks,
+    man-days, tips and wages are all calculated on the person's COMBINED
+    hours (one employee = one FLSA hours count). Use build_earnout_pivot
+    on the ORIGINAL (pre-fold) records to get the alias-vs-canonical
+    breakdown for the earnout schedule -- nothing here affects that."""
+    if not sister_map:
+        return list(records)
+    mapped = []
+    for name, date, amt in records:
+        alias = sister_map.get(name)
+        mapped.append((alias["canonical"], date, amt) if alias else (name, date, amt))
+    return mapped
+
+
+def build_earnout_pivot(records, sister_map):
+    """Builds a pivot table exactly like Rod's reference: raw timeclock
+    names as rows (the alias AND the real employee's own name, shown
+    separately -- not combined), every date in the pay period as columns
+    (blank where that name has no hours that day), a "Grand Total" row/
+    column, and a rightmost % column showing each row's share of that
+    person's combined total. One such table per employee who has a
+    sister-company split; grouped by entity label.
+
+    `records` must be the ORIGINAL raw (name, date, amt) records --
+    before alias names get remapped to their canonical employee -- so
+    each name's own row can still be shown.
+
+    Returns dict entity_label -> dict canonical_name -> {
+        "dates": [sorted date list, the full pay-period range],
+        "rows": [(raw_name, [hours or None per date], row_total)],
+        "totals_per_date": [combined hours per date, None if none],
+        "grand_total": combined total hours for this person,
+    }
+    """
+    if not sister_map:
+        return {}
+
+    all_dates = sorted({d for _, d, _ in records})
+    raw_daily = defaultdict(float)
+    raw_seen = defaultdict(bool)
+    for name, date, amt in records:
+        raw_daily[(name, date)] += amt
+        raw_seen[(name, date)] = True
+
+    groups = defaultdict(lambda: defaultdict(set))  # label -> canonical -> {alias names}
+    for alias, info in sister_map.items():
+        groups[info["entity_label"]][info["canonical"]].add(alias)
+
+    result = {}
+    for label, by_canonical in groups.items():
+        result[label] = {}
+        for canonical, aliases in by_canonical.items():
+            raw_names = sorted(aliases | {canonical})
+            rows = []
+            totals_per_date = [0.0] * len(all_dates)
+            date_has_data = [False] * len(all_dates)
+            for raw_name in raw_names:
+                values = []
+                row_total = 0.0
+                for i, date in enumerate(all_dates):
+                    if raw_seen.get((raw_name, date)):
+                        h = raw_daily[(raw_name, date)]
+                        values.append(round(h, 2))
+                        totals_per_date[i] += h
+                        date_has_data[i] = True
+                        row_total += h
+                    else:
+                        values.append(None)
+                rows.append((raw_name, values, round(row_total, 2)))
+            grand_total = round(sum(row_total for _, _, row_total in rows), 2)
+            result[label][canonical] = {
+                "dates": all_dates,
+                "rows": rows,
+                "totals_per_date": [round(v, 2) if date_has_data[i] else None
+                                    for i, v in enumerate(totals_per_date)],
+                "grand_total": grand_total,
+            }
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Step 1: parse the raw timeclock export (from decoded text, not a path)
 # ---------------------------------------------------------------------------
 def parse_raw_export_text(text):
@@ -255,11 +447,27 @@ def autosize(ws, min_width=9, max_width=42):
 
 
 def build_report(csv_text, employees, order, pay_date, raw_csv_name,
-                  total_tip_revenue, bonnie_brae, swift, driver_days,
+                  total_tip_revenue, bonnie_brae, swift, driver_info,
                   pending_pto, pending_purchases, pending_misc_amt,
-                  pending_misc_reimb):
+                  pending_misc_reimb, sister_map=None):
     """employees/order: same shape as before (dict name -> {department,
     rate, tip_eligible}, plus the name order list).
+
+    driver_info: dict driver_name -> {"days": <days driven, flat 1.0/day
+    credit>, "tips": <$>, "deliveries": <$>, "setups": <$>} -- entered by
+    Larry (or a Manager backing him up) on the Tip Pool tab. "days" feeds
+    the tip-pool payout (same as before); tips/deliveries/setups feed the
+    read-only "Driver Payroll (1099s) Recap" sheet (each driver's own
+    earnings, unrelated to the tip pool -- this replaces the separate
+    "Driver Payroll and EE Tips" workbook Larry used to maintain by hand).
+
+    sister_map: dict alias_name -> {"canonical": <real employee name>,
+    "entity_label": <e.g. "Easy Entrées">} from the `sisterCompanyAliases`
+    Firestore collection (Owner-maintained). Hours punched under an alias
+    are folded into the canonical employee's combined hours for every
+    wage/OT/break/man-days/tips calculation, and also broken out on a
+    separate "Earnout - <label>" sheet per entity for reference. Pass
+    None/empty if there are no aliases -- nothing changes.
 
     pending_* : lists of dicts, each {"id": <firestore doc id>,
     "employeeName": ..., "hours"/"amount": ..., ...} -- every currently
@@ -275,12 +483,39 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     "miscAmounts": [...], "miscReimbursements": [...]}.
     """
     warnings = []
-    records = parse_raw_export_text(csv_text)
+    sister_map = sister_map or {}
+    driver_info = driver_info or {}
+    driver_days = {name: info.get("days", 0) for name, info in driver_info.items()}
+
+    original_records = parse_raw_export_text(csv_text)
+    records = apply_entity_map(original_records, sister_map)
+    earnout_pivot = build_earnout_pivot(original_records, sister_map)
+
     computed, unknown_names, all_dates = compute_hours_and_wages(records, employees)
     if unknown_names:
         warnings.append(
             "These names appear in the timeclock export but have no wage rate "
             "on file, so their hours are not in this report: " + ", ".join(unknown_names)
+        )
+
+    thao_makeup, thao_shortfalls = (0.0, [])
+    if THAO_NAME in employees:
+        thao_makeup, thao_shortfalls = thao_pto_makeup_hours(records, THAO_NAME)
+        if thao_makeup:
+            weeks_desc = ", ".join(
+                f"week of {wk:%m/%d} (worked {worked:.2f} hrs, +{added:.2f} PTO)"
+                for wk, worked, added in thao_shortfalls
+            )
+            warnings.append(
+                f"Added {thao_makeup:.2f} automatic PTO makeup hour(s) for "
+                f"{THAO_NAME} for week(s) under 40 hrs worked: {weeks_desc}."
+            )
+
+    rod_medical, rod_medical_nth = rod_medical_amount(pay_date)
+    if rod_medical is None:
+        warnings.append(
+            f"{pay_date:%m/%d/%Y} doesn't line up with the known biweekly pay "
+            "cadence, so Rod's 2% S-Corp Medical was left blank for manual entry."
         )
 
     net_pool = round(total_tip_revenue - bonnie_brae - swift, 2)
@@ -306,6 +541,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     ee_purchases, purch_ids, u2 = sum_by_employee(pending_purchases, "amount", employees)
     misc_amt, misc_amt_ids, u3 = sum_by_employee(pending_misc_amt, "amount", employees)
     misc_reimb, misc_reimb_ids, u4 = sum_by_employee(pending_misc_reimb, "amount", employees)
+    if thao_makeup:
+        pto_hours[THAO_NAME] = round(pto_hours.get(THAO_NAME, 0.0) + thao_makeup, 2)
     unresolved_names = sorted(set(u1) | set(u2) | set(u3) | set(u4))
     if unresolved_names:
         warnings.append(
@@ -625,6 +862,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 cell.value = f'=IFERROR(VLOOKUP({name_cell},{WEEKLY_SHEET}!$A${pt_first_row}:$D${pt_last_row},3,FALSE),0)'
             elif col_name == "CC Tips Owed" and not is_salaried:
                 cell.value = f'=IFERROR(VLOOKUP({name_cell},{TIPS_SHEET}!$A${w2_rows_start}:$E${w2_rows_end},5,FALSE),"")'
+            elif col_name == "2% S-Corp Medical" and name == ROD_ROW_NAME and rod_medical is not None:
+                cell.value = rod_medical
             elif col_name in DED_COLS:
                 cell.value = ded_lookup(DED_COLS[col_name], name_cell)
         return r
@@ -676,6 +915,92 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             row += 1
         autosize(ws6)
 
+    if driver_info:
+        ws7 = wb.create_sheet("Driver Payroll (1099s) Recap")
+        r7 = title_block(ws7, "Driver Payroll (1099s) Recap", [
+            "Each driver's own reported earnings this pay period -- entered on the Tip Pool tab.",
+            "Not part of ADP Entry (1099s aren't payroll) and unrelated to the tip-pool payout above.",
+            "Total = Tips + Deliveries + Setups (computed here, not separately entered).",
+        ])
+        for i, h in enumerate(["Driver", "Tips", "Deliveries", "Setups", "Total"], start=1):
+            ws7.cell(row=r7, column=i, value=h)
+        style_header(ws7, r7, 5)
+        row = r7 + 1
+        recap_first_row = row
+        for dname, info in driver_info.items():
+            ws7.cell(row=row, column=1, value=dname).font = INPUT_FONT
+            for cc, field in ((2, "tips"), (3, "deliveries"), (4, "setups")):
+                c = ws7.cell(row=row, column=cc, value=info.get(field, 0) or 0)
+                c.font = INPUT_FONT
+                c.number_format = "$#,##0.00"
+            total_f = f"=B{row}+C{row}+D{row}"
+            c = ws7.cell(row=row, column=5, value=total_f)
+            c.font = FORMULA_FONT
+            c.number_format = "$#,##0.00"
+            for cc in range(1, 6):
+                ws7.cell(row=row, column=cc).border = THIN
+            row += 1
+        recap_last_row = row - 1
+        ws7.cell(row=row, column=1, value="Totals").font = BOLD_FONT
+        for cc in (2, 3, 4, 5):
+            col_letter = get_column_letter(cc)
+            c = ws7.cell(row=row, column=cc,
+                         value=f"=SUM({col_letter}{recap_first_row}:{col_letter}{recap_last_row})")
+            c.font = BOLD_FONT
+            c.number_format = "$#,##0.00"
+        for cc in range(1, 6):
+            ws7.cell(row=row, column=cc).border = THIN
+            ws7.cell(row=row, column=cc).fill = TOTALS_FILL
+        autosize(ws7)
+
+    # --- Earnout pivot: mirrors Rod's reference exactly -- a "Sum of amt"
+    # style pivot (dates as columns) filtered down to just the alias and
+    # real-name rows for each employee with a sister-company split, with a
+    # Grand Total row/column and a % column showing each row's share of
+    # that employee's combined total. No dollar figure -- Rod's bookkeeper
+    # applies payroll burden and splits cost herself from the percentage.
+    PCT_FORMAT = "0.0%"
+    DATE_FORMAT = "m/d/yyyy"
+    for label, by_canonical in (earnout_pivot or {}).items():
+        sheet_name = f"Earnout - {label}"[:31]  # Excel sheet name cap
+        ws_e = wb.create_sheet(sheet_name)
+
+        for canonical in sorted(by_canonical):
+            table = by_canonical[canonical]
+            dates = table["dates"]
+
+            ws_e.append(["Sum of amt", "Column Labels"])
+            header_row = ws_e.max_row + 1
+            ws_e.append(["Row Labels"] + dates + ["Grand Total", "% of total"])
+            for c in range(2, 2 + len(dates)):
+                ws_e.cell(row=header_row, column=c).number_format = DATE_FORMAT
+            style_header(ws_e, header_row, 2 + len(dates))
+
+            for raw_name, values, row_total in table["rows"]:
+                ws_e.append([raw_name] + values + [row_total,
+                             (row_total / table["grand_total"]) if table["grand_total"] else None])
+                ws_e.cell(row=ws_e.max_row, column=2 + len(dates) + 1).number_format = PCT_FORMAT
+
+            ws_e.append(["Grand Total"] + table["totals_per_date"] + [table["grand_total"], None])
+            for cell in ws_e[ws_e.max_row]:
+                cell.font = BOLD_FONT
+
+            ws_e.append([])  # spacer between employees, if more than one
+
+        for row_cells in ws_e.iter_rows(min_col=2, max_col=1 + len(next(iter(by_canonical.values()))["dates"])):
+            for cell in row_cells:
+                if isinstance(cell.value, datetime):
+                    cell.number_format = DATE_FORMAT
+
+        ws_e.append([])
+        ws_e.append([
+            "% of total = each row's Grand Total / that employee's combined "
+            "Grand Total across both names for the pay period. No payroll-"
+            "burden or overtime-premium dollar allocation is calculated "
+            "here -- the bookkeeper applies that from these percentages."
+        ])
+        autosize(ws_e)
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -699,7 +1024,14 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             for name in order if name in names_with_hours
         ],
         "drivers": [
-            {"name": dname, "daysDriven": ddays, "tipPayout": driver_tips.get(dname)}
+            {
+                "name": dname,
+                "daysDriven": ddays,
+                "tipPayout": driver_tips.get(dname),
+                "tips": driver_info.get(dname, {}).get("tips", 0),
+                "deliveries": driver_info.get(dname, {}).get("deliveries", 0),
+                "setups": driver_info.get(dname, {}).get("setups", 0),
+            }
             for dname, ddays in driver_days.items()
         ],
         "warnings": warnings,

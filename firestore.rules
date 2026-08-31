@@ -101,6 +101,16 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Sister-company (e.g. Easy Entrées) alias map: which alias name a
+    // person punches the clock under, and which real employee those hours
+    // fold into for wages/OT/tips. Owner-only -- Managers don't need it
+    // for anything, and it's config, not a payroll record, so (unlike the
+    // four request collections above) it can be edited or removed.
+    match /sisterCompanyAliases/{aliasId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
     match /ptoRequests/{id} {
       allow read: if isAdmin() || isManager();
       allow create: if canLogPayrollRequests() && unrecordedCreate();

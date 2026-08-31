@@ -74,6 +74,25 @@ def _load_employees_from_firestore(db):
     return employees, order
 
 
+def _load_sister_map_from_firestore(db):
+    """Returns dict alias_name -> {canonical, entity_label} from the
+    `sisterCompanyAliases` collection (Owner-maintained via the Employees
+    tab). Empty dict if there are no aliases -- report_builder treats
+    that as "nothing to fold," same as before this existed."""
+    sister_map = {}
+    for doc in db.collection("sisterCompanyAliases").stream():
+        d = doc.to_dict()
+        alias = d.get("aliasName")
+        canonical = d.get("canonicalEmployee")
+        if not alias or not canonical:
+            continue
+        sister_map[alias] = {
+            "canonical": canonical,
+            "entity_label": d.get("entityLabel") or "Easy Entrées",
+        }
+    return sister_map
+
+
 @https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=30)
 def seed_employees(req: https_fn.CallableRequest):
     """One-time (idempotent, safe to re-run) upload of the wage table into
@@ -163,11 +182,17 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             "The employee list is empty -- run 'seed_employees' once first "
             "(Owner only), or add employees in the console.")
 
-    driver_days = {
-        d["name"]: d.get("days", 0)
+    driver_info = {
+        d["name"]: {
+            "days": d.get("days", 0),
+            "tips": d.get("tips", 0),
+            "deliveries": d.get("deliveries", 0),
+            "setups": d.get("setups", 0),
+        }
         for d in (period.get("drivers") or [])
         if d.get("name")
     }
+    sister_map = _load_sister_map_from_firestore(db)
 
     pending = {}
     for coll_name in _REQUEST_COLLECTIONS:
@@ -184,11 +209,12 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             total_tip_revenue=float(period.get("totalRevenue") or 0),
             bonnie_brae=float(period.get("bonnieBrae") or 0),
             swift=float(period.get("swift") or 0),
-            driver_days=driver_days,
+            driver_info=driver_info,
             pending_pto=pending["ptoRequests"],
             pending_purchases=pending["employeePurchases"],
             pending_misc_amt=pending["miscAmounts"],
             pending_misc_reimb=pending["miscReimbursements"],
+            sister_map=sister_map,
         )
     except report_builder.ReportError as e:
         raise https_fn.HttpsError(https_fn.FunctionsErrorCode.INVALID_ARGUMENT, str(e))
@@ -231,7 +257,7 @@ def backup_payroll_data(event) -> None:
     from firebase_admin import storage as fb_storage
 
     db = firestore.client()
-    collections = ["employees", "tipsPeriods", "roles"] + list(_REQUEST_COLLECTIONS)
+    collections = ["employees", "tipsPeriods", "roles", "sisterCompanyAliases"] + list(_REQUEST_COLLECTIONS)
     dump = {}
     for coll_name in collections:
         dump[coll_name] = [

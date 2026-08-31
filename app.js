@@ -12,7 +12,7 @@ import {
   getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, addDoc, collection, getDocs, orderBy, query,
+  getFirestore, doc, getDoc, setDoc, addDoc, deleteDoc, collection, getDocs, orderBy, query,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getFunctions, httpsCallable,
@@ -104,6 +104,7 @@ let periodDefaultChosen = false;
 let lastReportBase64 = null;
 let lastReportFilename = null;
 let employeesCache = [];  // [{id, name, department, rate, tipEligible}, ...]
+let aliasesCache = [];    // [{id, aliasName, canonicalEmployee, entityLabel}, ...]
 
 // ---------- DOM helpers ----------
 const $ = (id) => document.getElementById(id);
@@ -216,6 +217,7 @@ onAuthStateChanged(auth, async (user) => {
   if (currentRole === "admin") {
     loadEmployees();
     loadPayrollRequests();
+    loadSisterAliases();
   } else if (currentRole === "manager") {
     loadEmployees();
     loadPayrollRequests();
@@ -253,11 +255,21 @@ async function pickDefaultPeriod() {
 }
 
 // ---------- Driver rows ----------
-function addDriverRow(name = "", days = "") {
+// Each driver row captures both halves of their 1099 record: Days Driven
+// (feeds the tip-pool payout, same as always) and their own Tips /
+// Deliveries / Setups earnings (feeds the read-only "Driver Payroll
+// (1099s) Recap" sheet on the report -- this replaces the separate
+// "Driver Payroll and EE Tips" workbook Larry used to maintain by hand;
+// everything now lives on this one form).
+function addDriverRow(name = "", days = "", tips = "", deliveries = "", setups = "") {
   const tr = document.createElement("tr");
+  const esc = (v) => String(v ?? "").replace(/"/g, "&quot;");
   tr.innerHTML = `
-    <td><input type="text" class="driverName" value="${name.replace(/"/g, "&quot;")}" /></td>
-    <td><input type="number" step="1" min="0" class="driverDays" value="${days}" style="width:90px" /></td>
+    <td><input type="text" class="driverName" value="${esc(name)}" /></td>
+    <td><input type="number" step="1" min="0" class="driverDays" value="${esc(days)}" style="width:80px" /></td>
+    <td><input type="number" step="0.01" min="0" class="driverTips" value="${esc(tips)}" style="width:90px" /></td>
+    <td><input type="number" step="0.01" min="0" class="driverDeliveries" value="${esc(deliveries)}" style="width:90px" /></td>
+    <td><input type="number" step="0.01" min="0" class="driverSetups" value="${esc(setups)}" style="width:90px" /></td>
     <td><button class="link removeDriverBtn" type="button">remove</button></td>
   `;
   tr.querySelector(".removeDriverBtn").addEventListener("click", () => tr.remove());
@@ -268,14 +280,17 @@ $("addDriverBtn").addEventListener("click", () => addDriverRow());
 
 function resetDriverRows(drivers) {
   $("driverRows").innerHTML = "";
-  (drivers && drivers.length ? drivers : DEFAULT_DRIVERS.map((n) => ({ name: n, days: 0 })))
-    .forEach((d) => addDriverRow(d.name, d.days));
+  (drivers && drivers.length ? drivers : DEFAULT_DRIVERS.map((n) => ({ name: n, days: 0, tips: 0, deliveries: 0, setups: 0 })))
+    .forEach((d) => addDriverRow(d.name, d.days, d.tips, d.deliveries, d.setups));
 }
 
 function readDriverRows() {
   return Array.from($("driverRows").querySelectorAll("tr")).map((tr) => ({
     name: tr.querySelector(".driverName").value.trim(),
     days: Number(tr.querySelector(".driverDays").value) || 0,
+    tips: Number(tr.querySelector(".driverTips").value) || 0,
+    deliveries: Number(tr.querySelector(".driverDeliveries").value) || 0,
+    setups: Number(tr.querySelector(".driverSetups").value) || 0,
   })).filter((d) => d.name);
 }
 
@@ -335,9 +350,9 @@ function applyEditLock() {
   [
     "totalRevenue", "bonnieBrae", "swift", "addDriverBtn", "saveDraftBtn", "submitBtn",
   ].forEach((id) => ($(id).disabled = locked));
-  document.querySelectorAll(".driverName, .driverDays, .removeDriverBtn").forEach(
-    (el) => (el.disabled = locked)
-  );
+  document.querySelectorAll(
+    ".driverName, .driverDays, .driverTips, .driverDeliveries, .driverSetups, .removeDriverBtn"
+  ).forEach((el) => (el.disabled = locked));
   if (locked) {
     setMsg($("formMsg"), "This period has already been submitted. Ask Rod if it needs a correction.", "");
   }
@@ -405,6 +420,7 @@ async function loadEmployees() {
   snap.forEach((d) => employeesCache.push({ id: d.id, ...d.data() }));
   populateEmployeeDropdown();
   renderEmployeeRows();
+  if ($("aliasCanonical")) populateAliasEmployeeDropdown();
 }
 
 function populateEmployeeDropdown() {
@@ -489,6 +505,87 @@ $("seedEmployeesBtn").addEventListener("click", async () => {
     setMsg($("seedMsg"), "Failed: " + err.message, "error");
   } finally {
     $("seedEmployeesBtn").disabled = false;
+  }
+});
+
+// ---------- Sister-company aliases (e.g. Easy Entrées) ----------
+// Someone punching the clock under an alias name (e.g. "EE Mariana")
+// gets those hours folded into the real employee's combined pay for
+// wages/OT/tips, with a separate earnout breakdown on the report.
+// Owner-only, per firestore.rules -- replaces the old
+// sister_company_map.csv file the local script used to read.
+async function loadSisterAliases() {
+  const snap = await getDocs(collection(db, "sisterCompanyAliases"));
+  aliasesCache = [];
+  snap.forEach((d) => aliasesCache.push({ id: d.id, ...d.data() }));
+  populateAliasEmployeeDropdown();
+  renderAliasRows();
+}
+
+function populateAliasEmployeeDropdown() {
+  const sel = $("aliasCanonical");
+  const prevValue = sel.value;
+  sel.innerHTML = "";
+  employeesCache.forEach((e) => {
+    const opt = document.createElement("option");
+    opt.value = e.name;
+    opt.textContent = e.name;
+    sel.appendChild(opt);
+  });
+  if (prevValue && employeesCache.some((e) => e.name === prevValue)) sel.value = prevValue;
+}
+
+function renderAliasRows() {
+  const tbody = $("aliasRows");
+  tbody.innerHTML = "";
+  aliasesCache.forEach((a) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${a.aliasName}</td>
+      <td>${a.canonicalEmployee}</td>
+      <td>${a.entityLabel || ""}</td>
+    `;
+    const removeTd = document.createElement("td");
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "link";
+    removeBtn.type = "button";
+    removeBtn.textContent = "remove";
+    removeBtn.addEventListener("click", async () => {
+      try {
+        await deleteDoc(doc(db, "sisterCompanyAliases", a.id));
+        loadSisterAliases();
+      } catch (err) {
+        setMsg($("aliasMsg"), "Couldn't remove it: " + err.message, "error");
+      }
+    });
+    removeTd.appendChild(removeBtn);
+    tr.appendChild(removeTd);
+    tbody.appendChild(tr);
+  });
+}
+
+$("aliasSaveBtn").addEventListener("click", async () => {
+  setMsg($("aliasMsg"), "", "");
+  const aliasName = $("aliasName").value.trim();
+  const canonicalEmployee = $("aliasCanonical").value;
+  const entityLabel = $("aliasEntityLabel").value.trim() || "Easy Entrées";
+  if (!aliasName) {
+    setMsg($("aliasMsg"), "Enter the alias name exactly as it appears on the timeclock.", "error");
+    return;
+  }
+  if (!canonicalEmployee) {
+    setMsg($("aliasMsg"), "Choose which employee these hours belong to -- if the list is empty, add employees first.", "error");
+    return;
+  }
+  try {
+    await setDoc(doc(db, "sisterCompanyAliases", aliasName), {
+      aliasName, canonicalEmployee, entityLabel,
+    });
+    setMsg($("aliasMsg"), "Saved.", "ok");
+    $("aliasName").value = "";
+    loadSisterAliases();
+  } catch (err) {
+    setMsg($("aliasMsg"), "Save failed: " + err.message, "error");
   }
 });
 
@@ -687,7 +784,12 @@ function renderReport(data) {
   drvRows.innerHTML = "";
   (summary.drivers || []).forEach((d) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${d.name}</td><td>${d.daysDriven}</td><td>${money(d.tipPayout)}</td>`;
+    const recapTotal = (Number(d.tips) || 0) + (Number(d.deliveries) || 0) + (Number(d.setups) || 0);
+    tr.innerHTML = `
+      <td>${d.name}</td><td>${d.daysDriven}</td><td>${money(d.tipPayout)}</td>
+      <td>${money(d.tips)}</td><td>${money(d.deliveries)}</td><td>${money(d.setups)}</td>
+      <td>${money(recapTotal)}</td>
+    `;
     drvRows.appendChild(tr);
   });
 

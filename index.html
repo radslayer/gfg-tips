@@ -234,15 +234,21 @@
       </div>
       <div class="net-pool">Net GFG Tip Pool: <span id="netPool">$0.00</span></div>
 
-      <h2 style="margin-top:24px;">1099 Driver Days Driven</h2>
+      <h2 style="margin-top:24px;">1099 Driver Payroll</h2>
       <div class="small" style="margin-bottom:10px;">
-        Every day a driver drove counts as 1.0 day, no matter how many hours
-        that day — the half-day rule for hourly employees doesn't apply here.
+        Days Driven feeds the tip-pool payout below (every day driven counts
+        as 1.0 day, no matter how many hours — the half-day rule for hourly
+        employees doesn't apply here). Tips / Deliveries / Setups are each
+        driver's own reported earnings for this period, for the Payroll
+        Report's Driver Payroll recap — this replaces the separate Driver
+        Payroll workbook.
       </div>
-      <table>
-        <thead><tr><th>Driver name</th><th>Days driven</th><th></th></tr></thead>
-        <tbody id="driverRows"></tbody>
-      </table>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Driver name</th><th>Days driven</th><th>Tips</th><th>Deliveries</th><th>Setups</th><th></th></tr></thead>
+          <tbody id="driverRows"></tbody>
+        </table>
+      </div>
       <button id="addDriverBtn" style="margin-top:10px;">+ Add driver</button>
 
       <div style="margin-top:24px; display:flex; gap:10px;">
@@ -356,6 +362,36 @@
       </div>
       <button id="seedEmployeesBtn" style="margin-top:14px;">One-time: load starting roster</button>
       <div id="seedMsg" class="msg small"></div>
+
+      <h2 style="margin-top:28px;">Sister-Company Aliases (Easy Entrées, etc.)</h2>
+      <div class="small" style="margin-bottom:10px;">
+        If someone punches the clock under a different name when working for
+        a sister company (e.g. "EE Mariana" for Mariana Ortiz), add it here.
+        Their hours are folded into the real employee's pay for wages/OT/
+        tips, and broken out separately on the report's Earnout sheet.
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="aliasName">Alias name (as it appears on the timeclock)</label>
+          <input type="text" id="aliasName" placeholder="e.g. EE Mariana" />
+        </div>
+        <div class="field">
+          <label for="aliasCanonical">Real employee</label>
+          <select id="aliasCanonical"></select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="aliasEntityLabel">Entity label (for the earnout sheet)</label>
+        <input type="text" id="aliasEntityLabel" placeholder="Easy Entrées" />
+      </div>
+      <button id="aliasSaveBtn">Save alias</button>
+      <div id="aliasMsg" class="msg"></div>
+      <div class="table-wrap" style="margin-top:16px;">
+        <table>
+          <thead><tr><th>Alias</th><th>Real employee</th><th>Entity</th><th></th></tr></thead>
+          <tbody id="aliasRows"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card hidden" id="reportCard">
@@ -394,11 +430,22 @@
             <tbody id="reportEmployeeRows"></tbody>
           </table>
         </div>
-        <h2 style="margin-top:18px;">1099 driver tip payouts</h2>
-        <table>
-          <thead><tr><th>Driver</th><th>Days driven</th><th>Tip payout</th></tr></thead>
-          <tbody id="reportDriverRows"></tbody>
-        </table>
+        <h2 style="margin-top:18px;">1099 driver payroll</h2>
+        <div class="small" style="margin-bottom:10px;">
+          Tip payout comes from the tip pool (Days Driven share); Tips/
+          Deliveries/Setups/Total are each driver's own reported recap.
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Driver</th><th>Days driven</th><th>Tip payout</th>
+                <th>Tips</th><th>Deliveries</th><th>Setups</th><th>Total</th>
+              </tr>
+            </thead>
+            <tbody id="reportDriverRows"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
