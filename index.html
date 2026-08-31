@@ -4,14 +4,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GFG Payroll</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
+  /* Gourmet for Good brand: navy #2B3C5E (Pantone 288), Montserrat type. */
   :root {
     --ink: #1f2328;
-    --muted: #57606a;
-    --border: #d0d7de;
+    --muted: #5b6472;
+    --border: #d7dbe0;
     --bg: #ffffff;
-    --panel: #f6f8fa;
-    --accent: #0969da;
+    --panel: #f1f2f2;
+    --accent: #2b3c5e;
     --accent-ink: #ffffff;
     --yellow: #fff8c5;
     --danger: #cf222e;
@@ -19,13 +23,12 @@
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    font-family: Arial, Helvetica, sans-serif;
+    font-family: "Montserrat", Arial, Helvetica, sans-serif;
     color: var(--ink);
     background: var(--panel);
   }
   header {
-    background: var(--bg);
-    border-bottom: 1px solid var(--border);
+    background: var(--accent);
     padding: 14px 20px;
     display: flex;
     align-items: center;
@@ -33,14 +36,22 @@
   }
   header h1 {
     font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--accent-ink);
     margin: 0;
   }
   #whoami {
     font-size: 13px;
-    color: var(--muted);
+    color: #d7dce6;
     display: flex;
     align-items: center;
     gap: 10px;
+  }
+  #whoami button {
+    background: transparent;
+    border-color: rgba(255,255,255,0.5);
+    color: var(--accent-ink);
   }
   main {
     max-width: 680px;
@@ -135,6 +146,31 @@
   .checkbox-row { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
   .checkbox-row input[type=checkbox] { width: auto; }
   .table-wrap { overflow-x: auto; }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tab-btn {
+    font-family: inherit;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 10px 14px;
+    font-size: 14px;
+    color: var(--muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tab-btn:hover { color: var(--ink); }
+  .tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    font-weight: bold;
+  }
 </style>
 </head>
 <body>
@@ -176,6 +212,8 @@
       <div class="small">Starts on the next period that hasn't been submitted yet. Choosing a date loads that period if it already exists, or starts a new one.</div>
       <div id="periodStatus" style="margin-top:10px;"></div>
     </div>
+
+    <nav id="tabBar" class="tabs hidden"></nav>
 
     <div class="card" id="formCard">
       <h2>4-Week Tip Pool</h2>

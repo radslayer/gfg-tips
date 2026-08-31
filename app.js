@@ -83,6 +83,18 @@ function formatPayDateLabel(dateStr) {
   });
 }
 
+// Each stacked card is now a "tab section" -- shown one at a time via the
+// tab bar once a role has more than one section available to it (Entry
+// only ever has one, so Larry never sees a tab bar at all).
+const SECTIONS = [
+  { id: "formCard", label: "Tip Pool", roles: ["admin", "manager", "entry"] },
+  { id: "requestsCard", label: "Payroll Requests", roles: ["admin", "manager"] },
+  { id: "employeesCard", label: "Employees", roles: ["admin"] },
+  { id: "adminCard", label: "All Periods", roles: ["admin"] },
+  { id: "reportCard", label: "Payroll Report", roles: ["admin"] },
+];
+let activeSectionId = null;
+
 let currentRole = null;   // "admin" | "manager" | "entry" | null
 let currentPeriodId = null;
 let currentPeriodStatus = null;
@@ -113,6 +125,49 @@ function populatePayDateOptions() {
   });
 }
 populatePayDateOptions();
+
+// ---------- Tabs (one section visible at a time, per role) ----------
+function showSection(id) {
+  activeSectionId = id;
+  SECTIONS.forEach((s) => {
+    if (s.id === id) show($(s.id)); else hide($(s.id));
+  });
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.section === id);
+  });
+}
+
+function renderTabsForRole(role) {
+  const visible = SECTIONS.filter((s) => role && s.roles.includes(role));
+  const tabBar = $("tabBar");
+  tabBar.innerHTML = "";
+
+  if (visible.length <= 1) {
+    // Nothing to tab between -- just show the one section that applies
+    // (or none, if this account has no role assigned yet).
+    hide(tabBar);
+    SECTIONS.forEach((s) => hide($(s.id)));
+    activeSectionId = visible.length === 1 ? visible[0].id : null;
+    if (activeSectionId) show($(activeSectionId));
+    return;
+  }
+
+  visible.forEach((s) => {
+    const btn = document.createElement("button");
+    btn.className = "tab-btn";
+    btn.type = "button";
+    btn.textContent = s.label;
+    btn.dataset.section = s.id;
+    btn.addEventListener("click", () => showSection(s.id));
+    tabBar.appendChild(btn);
+  });
+  show(tabBar);
+  // Keep whatever tab was already active if it's still valid for this
+  // role (role doesn't change mid-session in practice, but this is safe
+  // either way); otherwise default to the first tab.
+  const keepCurrent = activeSectionId && visible.some((s) => s.id === activeSectionId);
+  showSection(keepCurrent ? activeSectionId : visible[0].id);
+}
 
 // ---------- Auth ----------
 $("signInBtn").addEventListener("click", async () => {
@@ -149,34 +204,20 @@ onAuthStateChanged(auth, async (user) => {
   const roleLabel = ROLE_LABELS[currentRole] || "no role assigned";
   $("whoamiText").textContent = `${user.email} (${roleLabel})`;
 
+  renderTabsForRole(currentRole);
+
   if (currentRole === "admin") {
-    show($("adminCard"));
-    show($("reportCard"));
-    show($("employeesCard"));
-    show($("requestsCard"));
     loadAdminList();
     loadEmployees();
     loadPendingRequests();
   } else if (currentRole === "manager") {
-    hide($("adminCard"));
-    hide($("reportCard"));
-    hide($("employeesCard"));
-    show($("requestsCard"));
     loadEmployees();
     loadPendingRequests();
-  } else {
-    hide($("adminCard"));
-    hide($("reportCard"));
-    hide($("employeesCard"));
-    hide($("requestsCard"));
   }
 
   if (!currentRole) {
     setMsg($("formMsg"), "Your account isn't assigned a role yet -- ask Rod to add a " +
       "roles/" + user.uid + " document in Firestore.", "error");
-    hide($("formCard"));
-  } else {
-    show($("formCard"));
   }
 
   // Default the dropdown to the earliest period that hasn't been
