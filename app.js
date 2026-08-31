@@ -12,7 +12,7 @@ import {
   getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, addDoc, collection, getDocs, orderBy, query, where,
+  getFirestore, doc, getDoc, setDoc, addDoc, collection, getDocs, orderBy, query,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getFunctions, httpsCallable,
@@ -85,12 +85,14 @@ function formatPayDateLabel(dateStr) {
 
 // Each stacked card is now a "tab section" -- shown one at a time via the
 // tab bar once a role has more than one section available to it (Entry
-// only ever has one, so Larry never sees a tab bar at all).
+// only ever has one, so Larry never sees a tab bar at all). The old
+// Owner-only "All Periods" tab has been folded into the Tip Pool tab
+// itself (as a history table below the entry form) so every role that
+// can see Tip Pool also sees past periods there -- see loadPeriodsHistory.
 const SECTIONS = [
   { id: "formCard", label: "Tip Pool", roles: ["admin", "manager", "entry"] },
   { id: "requestsCard", label: "Payroll Requests", roles: ["admin", "manager"] },
   { id: "employeesCard", label: "Employees", roles: ["admin"] },
-  { id: "adminCard", label: "All Periods", roles: ["admin"] },
   { id: "reportCard", label: "Payroll Report", roles: ["admin"] },
 ];
 let activeSectionId = null;
@@ -206,13 +208,17 @@ onAuthStateChanged(auth, async (user) => {
 
   renderTabsForRole(currentRole);
 
+  // Past-periods history is visible to anyone with a role at all (Larry
+  // included) -- firestore.rules already permits any of the three roles
+  // to read every tipsPeriods doc, so this is purely a front-end change.
+  if (currentRole) loadPeriodsHistory();
+
   if (currentRole === "admin") {
-    loadAdminList();
     loadEmployees();
-    loadPendingRequests();
+    loadPayrollRequests();
   } else if (currentRole === "manager") {
     loadEmployees();
-    loadPendingRequests();
+    loadPayrollRequests();
   }
 
   if (!currentRole) {
@@ -358,7 +364,7 @@ async function savePeriod(status) {
     renderPeriodStatus();
     applyEditLock();
     setMsg($("formMsg"), status === "submitted" ? "Submitted." : "Draft saved.", "ok");
-    if (currentRole === "admin") loadAdminList();
+    loadPeriodsHistory();
   } catch (err) {
     setMsg($("formMsg"), "Save failed: " + err.message, "error");
   }
@@ -367,11 +373,11 @@ async function savePeriod(status) {
 $("saveDraftBtn").addEventListener("click", () => savePeriod("open"));
 $("submitBtn").addEventListener("click", () => savePeriod("submitted"));
 
-// ---------- Owner: list of all tip periods ----------
-async function loadAdminList() {
+// ---------- Past tip periods (visible to every role, in the Tip Pool tab) ----------
+async function loadPeriodsHistory() {
   const q = query(collection(db, "tipsPeriods"), orderBy("payDate", "desc"));
   const snap = await getDocs(q);
-  $("adminRows").innerHTML = "";
+  $("periodsHistoryRows").innerHTML = "";
   snap.forEach((docSnap) => {
     const d = docSnap.data();
     const net = (d.totalRevenue || 0) - (d.bonnieBrae || 0) - (d.swift || 0);
@@ -387,7 +393,7 @@ async function loadAdminList() {
       loadPeriod(d.payDate);
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
-    $("adminRows").appendChild(tr);
+    $("periodsHistoryRows").appendChild(tr);
   });
 }
 
@@ -535,7 +541,7 @@ $("reqSubmitBtn").addEventListener("click", async () => {
     setMsg($("reqMsg"), "Logged.", "ok");
     $("reqAmount").value = "";
     $("reqNote").value = "";
-    loadPendingRequests();
+    loadPayrollRequests();
   } catch (err) {
     setMsg($("reqMsg"), "Couldn't log it: " + err.message, "error");
   } finally {
@@ -543,29 +549,40 @@ $("reqSubmitBtn").addEventListener("click", async () => {
   }
 });
 
-async function loadPendingRequests() {
-  const allRows = [];
+// Fetches every request document (not just pending ones) and splits them
+// client-side into "pending" (payrollDate still null) and "history"
+// (already swept into a payroll run) -- Managers/Owner can now see both,
+// so an already-processed request never just disappears from view.
+async function loadPayrollRequests() {
+  const pendingRows = [];
+  const historyRows = [];
   for (const type of Object.keys(REQ_LABELS)) {
     const info = REQ_LABELS[type];
-    const q = query(collection(db, type), where("payrollDate", "==", null));
-    const snap = await getDocs(q);
+    const snap = await getDocs(collection(db, type));
     snap.forEach((d) => {
       const data = d.data();
-      allRows.push({
+      const row = {
         type,
         employeeName: data.employeeName,
         amount: data[info.amountField],
         date: data.date,
         note: data.note,
         enteredBy: data.enteredBy,
-      });
+        payrollDate: data.payrollDate || null,
+      };
+      (row.payrollDate ? historyRows : pendingRows).push(row);
     });
   }
-  allRows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  pendingRows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  historyRows.sort((a, b) => (a.payrollDate < b.payrollDate ? 1 : a.payrollDate > b.payrollDate ? -1 : 0));
 
-  const tbody = $("pendingRows");
+  renderRequestRows($("pendingRows"), pendingRows, false);
+  renderRequestRows($("historyRows"), historyRows, true);
+}
+
+function renderRequestRows(tbody, rows, showPayrollDate) {
   tbody.innerHTML = "";
-  allRows.forEach((r) => {
+  rows.forEach((r) => {
     const tr = document.createElement("tr");
     const amtDisplay = r.type === "ptoRequests"
       ? (Number(r.amount) || 0).toFixed(2)
@@ -577,6 +594,7 @@ async function loadPendingRequests() {
       <td>${r.date || ""}</td>
       <td>${r.note || ""}</td>
       <td>${r.enteredBy || ""}</td>
+      ${showPayrollDate ? `<td>${r.payrollDate || ""}</td>` : ""}
     `;
     tbody.appendChild(tr);
   });
@@ -629,7 +647,7 @@ $("generateReportBtn").addEventListener("click", async () => {
       ? ` ${res.data.finalizedCount} pending request(s) marked "on ${currentPeriodId}."`
       : " Preview only -- nothing in Firestore changed. Check the box above and re-run to finalize.";
     setMsg($("reportMsg"), "Report generated." + followUp, "ok");
-    if (res.data.finalized) loadPendingRequests();
+    if (res.data.finalized) loadPayrollRequests();
   } catch (err) {
     setMsg($("reportMsg"), "Couldn't generate the report: " + err.message, "error");
   } finally {

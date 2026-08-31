@@ -59,8 +59,8 @@ ADP_COLUMNS = [
     "Misc Reimburse (grocery runs)", "2% S-Corp Medical",
 ]
 SALARIED_TEMPLATE_ROWS = [
-    {"Name": "Mike", "Department": "10-Mgt"},
-    {"Name": "Rod", "Department": "10-Mgt"},
+    {"Name": "Mike", "Department": "M"},
+    {"Name": "Rod", "Department": "M"},
 ]
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E5F")
@@ -618,7 +618,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             if col_name == "Name":
                 cell.value = name
             elif col_name == "Department":
-                cell.value = "10-Mgt" if is_salaried else f'=VLOOKUP({name_cell},{CFG_SHEET}!$A${cfg_first_row}:$D${cfg_last_row},2,FALSE)'
+                cell.value = "M" if is_salaried else f'=VLOOKUP({name_cell},{CFG_SHEET}!$A${cfg_first_row}:$D${cfg_last_row},2,FALSE)'
             elif col_name == "Regular Hours" and not is_salaried:
                 cell.value = f'=IFERROR(VLOOKUP({name_cell},{WEEKLY_SHEET}!$A${pt_first_row}:$D${pt_last_row},2,FALSE),0)'
             elif col_name == "Overtime Hours" and not is_salaried:

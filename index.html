@@ -250,6 +250,14 @@
         <button class="primary" id="submitBtn">Submit</button>
       </div>
       <div id="formMsg" class="msg"></div>
+
+      <h2 style="margin-top:24px;">Past tip periods</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Pay date</th><th>Status</th><th>Net pool</th><th></th></tr></thead>
+          <tbody id="periodsHistoryRows"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card hidden" id="requestsCard">
@@ -299,6 +307,14 @@
           <tbody id="pendingRows"></tbody>
         </table>
       </div>
+
+      <h2 style="margin-top:24px;">History (already on a payroll run)</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th>Entered by</th><th>On payroll date</th></tr></thead>
+          <tbody id="historyRows"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card hidden" id="employeesCard">
@@ -314,7 +330,7 @@
         </div>
         <div class="field">
           <label for="empDept">Department</label>
-          <input type="text" id="empDept" placeholder="k / o / 10-Mgt" />
+          <input type="text" id="empDept" placeholder="K / O / M" />
         </div>
       </div>
       <div class="row">
@@ -340,14 +356,6 @@
       </div>
       <button id="seedEmployeesBtn" style="margin-top:14px;">One-time: load starting roster</button>
       <div id="seedMsg" class="msg small"></div>
-    </div>
-
-    <div class="card hidden" id="adminCard">
-      <h2>All tip periods (Owner)</h2>
-      <table>
-        <thead><tr><th>Pay date</th><th>Status</th><th>Net pool</th><th></th></tr></thead>
-        <tbody id="adminRows"></tbody>
-      </table>
     </div>
 
     <div class="card hidden" id="reportCard">
