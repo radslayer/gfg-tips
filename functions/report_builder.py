@@ -454,12 +454,15 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     rate, tip_eligible}, plus the name order list).
 
     driver_info: dict driver_name -> {"days": <days driven, flat 1.0/day
-    credit>, "tips": <$>, "deliveries": <$>, "setups": <$>} -- entered by
-    Larry (or a Manager backing him up) on the Tip Pool tab. "days" feeds
-    the tip-pool payout (same as before); tips/deliveries/setups feed the
-    read-only "Driver Payroll (1099s) Recap" sheet (each driver's own
-    earnings, unrelated to the tip pool -- this replaces the separate
-    "Driver Payroll and EE Tips" workbook Larry used to maintain by hand).
+    credit>, "deliveries": <$>, "setups": <$>} -- entered by Larry (or a
+    Manager backing him up) on the Tip Pool tab. "days" feeds the
+    tip-pool payout (same as before); deliveries/setups feed the
+    "Driver Payroll (1099s) Recap" sheet. That sheet's Tips column is NOT
+    entered by Larry -- it's the same computed tip-pool payout as the
+    "Driver Tip Payouts (1099s)" sheet (allocate_tips_with_drivers), since
+    a driver's Tips figure only exists once the tip pool math runs. This
+    replaces the separate "Driver Payroll and EE Tips" workbook Larry used
+    to maintain by hand.
 
     sister_map: dict alias_name -> {"canonical": <real employee name>,
     "entity_label": <e.g. "Easy Entrées">} from the `sisterCompanyAliases`
@@ -918,18 +921,26 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     if driver_info:
         ws7 = wb.create_sheet("Driver Payroll (1099s) Recap")
         r7 = title_block(ws7, "Driver Payroll (1099s) Recap", [
-            "Each driver's own reported earnings this pay period -- entered on the Tip Pool tab.",
-            "Not part of ADP Entry (1099s aren't payroll) and unrelated to the tip-pool payout above.",
-            "Total = Tips + Deliveries + Setups (computed here, not separately entered).",
+            "Deliveries $ Total and Setups $ Total are NOT counts -- different deliveries/setups pay",
+            "different amounts, so each is the driver's own already-added-up dollar total for the period",
+            "(entered on the Tip Pool tab, same as the old Driver Payroll workbook).",
+            "Tips is NOT entered by Larry -- it's pulled from " + TIPS_SHEET + " (the same tip-pool payout",
+            "shown on the Driver Tip Payouts sheet), since that figure only exists once the tip-pool math runs.",
+            "Not part of ADP Entry (1099s aren't payroll).",
+            "Total = Tips + Deliveries $ Total + Setups $ Total (computed here, not separately entered).",
         ])
-        for i, h in enumerate(["Driver", "Tips", "Deliveries", "Setups", "Total"], start=1):
+        for i, h in enumerate(["Driver", "Tips", "Deliveries $ Total", "Setups $ Total", "Total"], start=1):
             ws7.cell(row=r7, column=i, value=h)
         style_header(ws7, r7, 5)
         row = r7 + 1
         recap_first_row = row
         for dname, info in driver_info.items():
             ws7.cell(row=row, column=1, value=dname).font = INPUT_FONT
-            for cc, field in ((2, "tips"), (3, "deliveries"), (4, "setups")):
+            tips_f = f'=VLOOKUP(A{row},{TIPS_SHEET}!$A${drv_rows_start}:$E${drv_rows_end},5,FALSE)'
+            c = ws7.cell(row=row, column=2, value=tips_f)
+            c.font = FORMULA_FONT
+            c.number_format = "$#,##0.00"
+            for cc, field in ((3, "deliveries"), (4, "setups")):
                 c = ws7.cell(row=row, column=cc, value=info.get(field, 0) or 0)
                 c.font = INPUT_FONT
                 c.number_format = "$#,##0.00"
@@ -1028,7 +1039,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 "name": dname,
                 "daysDriven": ddays,
                 "tipPayout": driver_tips.get(dname),
-                "tips": driver_info.get(dname, {}).get("tips", 0),
+                "tips": driver_tips.get(dname, 0),
                 "deliveries": driver_info.get(dname, {}).get("deliveries", 0),
                 "setups": driver_info.get(dname, {}).get("setups", 0),
             }

@@ -36,10 +36,22 @@ function isSignedIn() {
   return request.auth != null;
 }
 
+// Role comes from a custom claim on the user's ID token, NOT a Firestore
+// lookup (per Rod, 9/2/2026): a get() here used to read roles/{uid}, but
+// every Write/Listen request that triggered that get() was failing with a
+// Firestore-side INTERNAL error (status code 13) specific to this project's
+// rules-evaluation backend -- confirmed via Cloud Audit Logs and by
+// temporarily removing the get() as a diagnostic, which fixed it instantly.
+// Reading the role straight off the token needs no database access during
+// rule evaluation at all, so it can't hit that failure mode.
+//
+// The `roles/{uid}` collection below still exists as the human-readable
+// record of who has what role (still hand-edited in the Firebase console),
+// but it is no longer what authorization decisions are based on -- run
+// sync_role_claims.py after changing a roles/{uid} doc to push the change
+// onto that user's custom claim, or their access won't actually change.
 function myRole() {
-  return isSignedIn()
-    ? get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role
-    : null;
+  return isSignedIn() ? request.auth.token.role : null;
 }
 
 function isAdmin() {

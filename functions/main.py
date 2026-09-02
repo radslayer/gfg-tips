@@ -185,7 +185,6 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     driver_info = {
         d["name"]: {
             "days": d.get("days", 0),
-            "tips": d.get("tips", 0),
             "deliveries": d.get("deliveries", 0),
             "setups": d.get("setups", 0),
         }

@@ -238,14 +238,22 @@
       <div class="small" style="margin-bottom:10px;">
         Days Driven feeds the tip-pool payout below (every day driven counts
         as 1.0 day, no matter how many hours — the half-day rule for hourly
-        employees doesn't apply here). Tips / Deliveries / Setups are each
-        driver's own reported earnings for this period, for the Payroll
-        Report's Driver Payroll recap — this replaces the separate Driver
-        Payroll workbook.
+        employees doesn't apply here).
+        <br><br>
+        <strong>Deliveries $ Total</strong> and <strong>Setups $ Total</strong> are NOT
+        counts — different deliveries/setups pay different amounts, so each
+        field is the driver's own already-added-up dollar total for the whole
+        period (Larry adds up what each delivery/setup paid and enters the
+        one total per driver, same as he did in the old Driver Payroll
+        workbook). These feed the Payroll Report's Driver Payroll recap —
+        this replaces that separate workbook.
+        <br><br>
+        Tips isn't entered here: it's the same tip-pool payout computed from
+        Days Driven, so the report fills it in automatically once it runs.
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Driver name</th><th>Days driven</th><th>Tips</th><th>Deliveries</th><th>Setups</th><th></th></tr></thead>
+          <thead><tr><th>Driver name</th><th>Days driven</th><th>Deliveries $ Total</th><th>Setups $ Total</th><th></th></tr></thead>
           <tbody id="driverRows"></tbody>
         </table>
       </div>
@@ -432,15 +440,18 @@
         </div>
         <h2 style="margin-top:18px;">1099 driver payroll</h2>
         <div class="small" style="margin-bottom:10px;">
-          Tip payout comes from the tip pool (Days Driven share); Tips/
-          Deliveries/Setups/Total are each driver's own reported recap.
+          Tip payout / Tips come from the tip pool (Days Driven share, computed
+          automatically). Deliveries $ Total / Setups $ Total are each driver's
+          own already-added-up dollar total for the period, entered on the Tip
+          Pool tab (not a count -- different deliveries/setups pay different
+          amounts).
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Driver</th><th>Days driven</th><th>Tip payout</th>
-                <th>Tips</th><th>Deliveries</th><th>Setups</th><th>Total</th>
+                <th>Tips</th><th>Deliveries $ Total</th><th>Setups $ Total</th><th>Total</th>
               </tr>
             </thead>
             <tbody id="reportDriverRows"></tbody>

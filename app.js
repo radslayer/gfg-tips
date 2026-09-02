@@ -255,21 +255,27 @@ async function pickDefaultPeriod() {
 }
 
 // ---------- Driver rows ----------
-// Each driver row captures both halves of their 1099 record: Days Driven
-// (feeds the tip-pool payout, same as always) and their own Tips /
-// Deliveries / Setups earnings (feeds the read-only "Driver Payroll
-// (1099s) Recap" sheet on the report -- this replaces the separate
-// "Driver Payroll and EE Tips" workbook Larry used to maintain by hand;
-// everything now lives on this one form).
-function addDriverRow(name = "", days = "", tips = "", deliveries = "", setups = "") {
+// Each driver row captures Days Driven (feeds the tip-pool payout, same
+// as always) plus their own Deliveries / Setups earnings (feeds the
+// "Driver Payroll (1099s) Recap" sheet on the report -- this replaces
+// the separate "Driver Payroll and EE Tips" workbook Larry used to
+// maintain by hand). Tips is deliberately NOT entered here: in that old
+// workbook, "Tips" was a formula pulled from the same tip-pool
+// distribution that pays every W2 employee's tip share, so it only has
+// a value once the full report runs (net pool split across everyone's
+// man-days/days-driven) -- not something Larry can fill in Friday when
+// he's just logging days driven and deliveries/setups. The report pulls
+// that number automatically from the tip-pool calc (same value shown on
+// the "Driver Tip Payouts" sheet); Larry only ever enters the three
+// fields below.
+function addDriverRow(name = "", days = "", deliveries = "", setups = "") {
   const tr = document.createElement("tr");
   const esc = (v) => String(v ?? "").replace(/"/g, "&quot;");
   tr.innerHTML = `
     <td><input type="text" class="driverName" value="${esc(name)}" /></td>
     <td><input type="number" step="1" min="0" class="driverDays" value="${esc(days)}" style="width:80px" /></td>
-    <td><input type="number" step="0.01" min="0" class="driverTips" value="${esc(tips)}" style="width:90px" /></td>
-    <td><input type="number" step="0.01" min="0" class="driverDeliveries" value="${esc(deliveries)}" style="width:90px" /></td>
-    <td><input type="number" step="0.01" min="0" class="driverSetups" value="${esc(setups)}" style="width:90px" /></td>
+    <td><input type="number" step="0.01" min="0" class="driverDeliveries" value="${esc(deliveries)}" style="width:90px" placeholder="$ total" title="Dollar total of all deliveries this driver made this period -- not a count." /></td>
+    <td><input type="number" step="0.01" min="0" class="driverSetups" value="${esc(setups)}" style="width:90px" placeholder="$ total" title="Dollar total of all setups this driver did this period -- not a count." /></td>
     <td><button class="link removeDriverBtn" type="button">remove</button></td>
   `;
   tr.querySelector(".removeDriverBtn").addEventListener("click", () => tr.remove());
@@ -280,15 +286,14 @@ $("addDriverBtn").addEventListener("click", () => addDriverRow());
 
 function resetDriverRows(drivers) {
   $("driverRows").innerHTML = "";
-  (drivers && drivers.length ? drivers : DEFAULT_DRIVERS.map((n) => ({ name: n, days: 0, tips: 0, deliveries: 0, setups: 0 })))
-    .forEach((d) => addDriverRow(d.name, d.days, d.tips, d.deliveries, d.setups));
+  (drivers && drivers.length ? drivers : DEFAULT_DRIVERS.map((n) => ({ name: n, days: 0, deliveries: 0, setups: 0 })))
+    .forEach((d) => addDriverRow(d.name, d.days, d.deliveries, d.setups));
 }
 
 function readDriverRows() {
   return Array.from($("driverRows").querySelectorAll("tr")).map((tr) => ({
     name: tr.querySelector(".driverName").value.trim(),
     days: Number(tr.querySelector(".driverDays").value) || 0,
-    tips: Number(tr.querySelector(".driverTips").value) || 0,
     deliveries: Number(tr.querySelector(".driverDeliveries").value) || 0,
     setups: Number(tr.querySelector(".driverSetups").value) || 0,
   })).filter((d) => d.name);
@@ -351,7 +356,7 @@ function applyEditLock() {
     "totalRevenue", "bonnieBrae", "swift", "addDriverBtn", "saveDraftBtn", "submitBtn",
   ].forEach((id) => ($(id).disabled = locked));
   document.querySelectorAll(
-    ".driverName, .driverDays, .driverTips, .driverDeliveries, .driverSetups, .removeDriverBtn"
+    ".driverName, .driverDays, .driverDeliveries, .driverSetups, .removeDriverBtn"
   ).forEach((el) => (el.disabled = locked));
   if (locked) {
     setMsg($("formMsg"), "This period has already been submitted. Ask Rod if it needs a correction.", "");
