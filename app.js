@@ -928,17 +928,23 @@ function renderRequestRows(tbody, rows, showPayrollDate) {
     const amtDisplay = r.type === "ptoRequests"
       ? (Number(r.amount) || 0).toFixed(2)
       : money(r.amount);
-    const dateDisplay = (r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
+    // Date and Note each carry a small muted sub-line instead of their own
+    // column -- Applies-to-payroll under Date (pending PTO only) and
+    // Entered-by under Note -- so the table stays narrow enough to fit
+    // without a horizontal scrollbar.
+    let dateDisplay = (r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
       ? `${r.date} – ${r.endDate}`
       : (r.date || "");
+    if (!showPayrollDate && r.type === "ptoRequests" && r.targetPayrollDate) {
+      dateDisplay += `<div class="small">payroll: ${formatPayDateLabel(r.targetPayrollDate)}</div>`;
+    }
+    const noteDisplay = (r.note || "") + (r.enteredBy ? `<div class="small">— ${r.enteredBy}</div>` : "");
     tr.innerHTML = `
       <td>${REQ_TYPE_DISPLAY[r.type]}</td>
       <td>${r.employeeName}</td>
       <td>${amtDisplay}</td>
       <td>${dateDisplay}</td>
-      ${showPayrollDate ? "" : `<td>${r.type === "ptoRequests" && r.targetPayrollDate ? formatPayDateLabel(r.targetPayrollDate) : ""}</td>`}
-      <td>${r.note || ""}</td>
-      <td>${r.enteredBy || ""}</td>
+      <td>${noteDisplay}</td>
       ${showPayrollDate ? `<td>${r.payrollDate || ""}</td>` : "<td></td>"}
     `;
     if (!showPayrollDate) {
