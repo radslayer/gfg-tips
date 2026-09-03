@@ -11,13 +11,16 @@ caller/main.py) marks it processed with this pay date. See main.py for
 the Firestore read/write side; this module only builds the workbook and
 summary from data it's handed.
 
-SCOPE NOTE (unchanged from v1, per Rod 8/31/2026): tip allocation uses
-ONLY the man-days computed from the single uploaded raw timeclock CSV
-for this pay period -- not yet the fully-proven 4-week/2-pay-period
-rolling window (that model is proven correct -- see the project doc --
-but needs a persisted man-days history across periods that hasn't been
-built yet). The report says so explicitly on the Man-Days & Tips Calc
-sheet.
+v3 (9/3/2026): pay periods run every 2 weeks now (see is_tip_week below),
+not just every 4 weeks -- only every OTHER pay date is a tip payout week.
+Tip allocation now uses the fully-proven 4-week/2-pay-period rolling
+window for BOTH W2 employees and 1099 drivers, treated identically:
+each period's report run persists that period's man-days/days-driven
+(main.py writes this to the `tipsPeriods` doc on finalize), and a tip
+week's split combines this period's days with the prior period's for
+everyone. Previously only drivers got this combination and W2 man-days
+came from just the single uploaded CSV -- that gap is closed. See
+build_report's docstring and the Man-Days & Tips Calc sheet for detail.
 """
 import csv
 import io
@@ -167,6 +170,21 @@ ROD_MEDICAL_THIRD_PERIOD = 0.0    # ...EXCEPT the 3rd biweekly pay date in a cal
 
 def is_pay_date(d):
     return (d.date() - PAY_DATE_ANCHOR.date()).days % 14 == 0
+
+
+def is_tip_week(d):
+    """Only every OTHER biweekly pay date actually distributes tips -- the
+    rest are still real payroll runs (drivers still get paid Deliveries $/
+    Setups $ that period), just with no tip pool that week. Confirmed
+    9/3/2026 (Rod): 8/28/2026 was NOT a tip week, 9/11/2026 IS, alternating
+    strictly from there (a holiday-shifted Friday doesn't change which
+    "slot" a date falls in). Counting 14-day periods from PAY_DATE_ANCHOR,
+    this also matches the already-confirmed historical data: 8/14/2026 (2
+    periods, even) was a real tip week; 8/28/2026 (3 periods, odd) wasn't;
+    9/11/2026 (4 periods, even) is. Keep in sync with isTipWeek() in
+    app.js, which must agree with this exactly."""
+    periods = (d.date() - PAY_DATE_ANCHOR.date()).days / 14
+    return round(periods) % 2 == 0
 
 
 def nth_pay_period_of_month(pay_date):
@@ -391,22 +409,28 @@ def compute_hours_and_wages(records, employees):
     return results, unknown, all_dates
 
 
-def allocate_tips_with_drivers(computed, employees, net_pool, driver_days):
-    """driver_days: dict driver_name -> total days driven (flat 1.0/day, no
-    half-day rule). Returns (w2_tips: {name: $}, driver_tips: {name: $}),
-    both dicts only containing people who actually share in the pool."""
+def allocate_tips_with_drivers(w2_days, employees, net_pool, driver_days):
+    """w2_days / driver_days: dict name -> days for the tip split -- on a
+    tip payout week this is already the 4-week combination (this period +
+    prior period), computed by the caller (build_report); on a regular
+    payroll date it's just this period's days (no tip split happens
+    there anyway, since net_pool is always 0 that week). W2 and drivers
+    are treated identically here -- fixed 9/3/2026, previously drivers
+    alone got the 2-period combination while W2 stayed single-period.
+    Returns (w2_tips: {name: $}, driver_tips: {name: $}), both dicts only
+    containing people who actually share in the pool."""
     w2_eligible = [
         name for name, info in employees.items()
-        if info["tip_eligible"] and name in computed and computed[name]["man_days"] > 0
+        if info["tip_eligible"] and w2_days.get(name, 0) > 0
     ]
     driver_eligible = [n for n, d in driver_days.items() if d and d > 0]
 
-    total_days = sum(computed[n]["man_days"] for n in w2_eligible) + \
+    total_days = sum(w2_days[n] for n in w2_eligible) + \
         sum(driver_days[n] for n in driver_eligible)
     if total_days <= 0:
         return {}, {}
     rate_per_day = net_pool / total_days
-    w2_tips = {n: round(rate_per_day * computed[n]["man_days"], 2) for n in w2_eligible}
+    w2_tips = {n: round(rate_per_day * w2_days[n], 2) for n in w2_eligible}
     driver_tips = {n: round(rate_per_day * driver_days[n], 2) for n in driver_eligible}
     return w2_tips, driver_tips
 
@@ -449,20 +473,42 @@ def autosize(ws, min_width=9, max_width=42):
 def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                   total_tip_revenue, bonnie_brae, swift, driver_info,
                   pending_pto, pending_purchases, pending_misc_amt,
-                  pending_misc_reimb, sister_map=None):
+                  pending_misc_reimb, sister_map=None, prior_driver_info=None,
+                  prior_w2_man_days=None):
     """employees/order: same shape as before (dict name -> {department,
     rate, tip_eligible}, plus the name order list).
 
     driver_info: dict driver_name -> {"days": <days driven, flat 1.0/day
     credit>, "deliveries": <$>, "setups": <$>} -- entered by Larry (or a
-    Manager backing him up) on the Tip Pool tab. "days" feeds the
-    tip-pool payout (same as before); deliveries/setups feed the
-    "Driver Payroll (1099s) Recap" sheet. That sheet's Tips column is NOT
-    entered by Larry -- it's the same computed tip-pool payout as the
-    "Driver Tip Payouts (1099s)" sheet (allocate_tips_with_drivers), since
-    a driver's Tips figure only exists once the tip pool math runs. This
-    replaces the separate "Driver Payroll and EE Tips" workbook Larry used
-    to maintain by hand.
+    Manager backing him up) on the Tip Pool tab, for THIS pay period.
+    "deliveries"/"setups" feed the "Driver Payroll (1099s) Recap" sheet
+    and are always THIS period's own dollar totals only (drivers get paid
+    those every period, tip week or not). "days" feeds the tip-pool
+    payout, but ONLY on a tip week (is_tip_week(pay_date)) -- and even
+    then, combined with prior_driver_info's days (see below), since tips
+    cover the full 4-week window. On a non-tip week, total_tip_revenue is
+    always 0 (Larry doesn't enter it that period) so the tip payout comes
+    out to $0 for everyone regardless -- no special-casing needed there.
+    That sheet's Tips column is NOT entered by Larry -- it's the same
+    computed tip-pool payout as the "Driver Tip Payouts (1099s)" sheet
+    (allocate_tips_with_drivers), since a driver's Tips figure only
+    exists once the tip pool math runs. This replaces the separate
+    "Driver Payroll and EE Tips" workbook Larry used to maintain by hand.
+
+    prior_driver_info: same shape as driver_info, but for the prior
+    biweekly pay period -- only meaningful (and only passed by main.py)
+    on a tip week, where the tip split needs BOTH periods' days driven
+    combined. None/empty on a non-tip week, or if no prior period has
+    been recorded yet.
+
+    prior_w2_man_days: dict employee_name -> man_days from the prior
+    biweekly period's report run (persisted by main.py when that run was
+    finalized) -- same idea as prior_driver_info, but for W2 employees.
+    Fixed 9/3/2026: W2 and 1099 drivers are now treated identically for
+    the tip split -- both combine this period + the prior period on a tip
+    week. Before this fix, only drivers got the 2-period combination and
+    W2 man-days came from only the single uploaded CSV; that mismatch is
+    gone now that both sides persist and combine the same way.
 
     sister_map: dict alias_name -> {"canonical": <real employee name>,
     "entity_label": <e.g. "Easy Entrées">} from the `sisterCompanyAliases`
@@ -488,7 +534,12 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     warnings = []
     sister_map = sister_map or {}
     driver_info = driver_info or {}
+    prior_driver_info = prior_driver_info or {}
+    prior_w2_man_days = prior_w2_man_days or {}
+    # driver_days: THIS period's own days, used for the recap sheet display
+    # and (on a non-tip week) is simply unused for any payout math.
     driver_days = {name: info.get("days", 0) for name, info in driver_info.items()}
+    tip_week = is_tip_week(pay_date)
 
     original_records = parse_raw_export_text(csv_text)
     records = apply_entity_map(original_records, sister_map)
@@ -500,6 +551,46 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             "These names appear in the timeclock export but have no wage rate "
             "on file, so their hours are not in this report: " + ", ".join(unknown_names)
         )
+
+    # The tip split covers the full 4-week window -- combine this period's
+    # days with the prior period's, for BOTH W2 employees and drivers alike
+    # (fixed 9/3/2026 -- previously only drivers got this combination).
+    # On a non-tip week there's no tip pool anyway (total_tip_revenue is
+    # always 0 that week), so Combined just equals This Period.
+    w2_days_this_period = {name: computed[name]["man_days"] for name in computed}
+    if tip_week:
+        driver_names = set(driver_days) | set(prior_driver_info)
+        driver_days_for_tips = {
+            name: driver_days.get(name, 0) + prior_driver_info.get(name, {}).get("days", 0)
+            for name in driver_names
+        }
+        w2_names = set(w2_days_this_period) | set(prior_w2_man_days)
+        w2_days_for_tips = {
+            name: w2_days_this_period.get(name, 0) + prior_w2_man_days.get(name, 0)
+            for name in w2_names
+        }
+        missing = []
+        if not prior_driver_info:
+            missing.append("drivers")
+        if not prior_w2_man_days:
+            missing.append("W2 employees")
+        if missing:
+            warnings.append(
+                "This is a tip payout week, but no prior period's man-days/days-"
+                f"driven were found on file for {' or '.join(missing)} -- the tip "
+                "split below uses only this period's days for them, which "
+                "understates their share of the 4-week window. Confirm the prior "
+                "period's report was run and finalized."
+            )
+    else:
+        driver_days_for_tips = driver_days
+        w2_days_for_tips = w2_days_this_period
+        if total_tip_revenue or bonnie_brae or swift:
+            warnings.append(
+                f"{pay_date:%m/%d/%Y} isn't a tip payout week, but Total Tip "
+                "Revenue/Bonnie Brae/Swift were non-zero -- they were ignored "
+                "for this report. Only Deliveries $/Setups $ get paid out this period."
+            )
 
     thao_makeup, thao_shortfalls = (0.0, [])
     if THAO_NAME in employees:
@@ -522,7 +613,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         )
 
     net_pool = round(total_tip_revenue - bonnie_brae - swift, 2)
-    w2_tips, driver_tips = allocate_tips_with_drivers(computed, employees, net_pool, driver_days)
+    w2_tips, driver_tips = allocate_tips_with_drivers(w2_days_for_tips, employees, net_pool, driver_days_for_tips)
 
     def sum_by_employee(records_list, amount_field, known_names):
         totals = defaultdict(float)
@@ -709,12 +800,15 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     ws3 = wb.create_sheet("3 - Man-Days & Tips Calc")
     r3 = title_block(ws3, "Man-Days & Tips Calculation", [
         "Total Tip Revenue / Bonnie Brae / Swift: entered on the admin report page for this period.",
-        "SIMPLIFIED MODEL: days worked are computed from THIS UPLOAD ONLY (one pay period's raw timeclock",
-        "export), not the fully-proven 4-week/2-pay-period rolling window (that model is proven correct but",
-        "needs a persisted man-days history across periods, not yet built -- ask Rod/Claude to add it).",
-        "1099 driver day-counts come from the tips web form (Larry, or a Manager filling in for him). Drivers",
-        "get a flat 1.0 credit per day driven -- never the 0.5-short-day rule that applies to W2 employees.",
-        "Share = a person's Days / everyone's combined Days (W2 tip-eligible + all drivers, same pool).",
+        "Fixed 9/3/2026: W2 employees and 1099 drivers are now treated identically for the tip split.",
+        "Both log/compute days every biweekly pay period. On a tip payout week, the Combined Days column",
+        "below is THIS period's days PLUS the prior (non-tip) period's -- the full 4-week window -- for",
+        "everyone, W2 and drivers alike. On a regular payroll date, Combined = This Period only (no tip",
+        "split runs that week anyway). W2 'This Period Days' is a live formula from the Daily Punches",
+        "sheet; 'Prior Period Days' is that person's persisted man-days from the prior period's report run",
+        "(0 if none on file yet -- see the warnings banner). Drivers get a flat 1.0 credit per day driven",
+        "-- never the 0.5-short-day rule that applies to W2 employees.",
+        "Share = a person's Combined Days / everyone's combined Days (W2 tip-eligible + all drivers, same pool).",
         "Tip $ = Share x Net Pool. Sam Gray is excluded from any share regardless of days worked.",
     ])
     ws3.cell(row=r3, column=1, value="Total Tip Revenue").font = BOLD_FONT
@@ -730,10 +824,16 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         for cc in (1, 2):
             ws3.cell(row=rr, column=cc).border = THIN
 
+    # 7 columns now (was 5): This Period / Prior Period / Combined replace
+    # the old single "Days" column, for both W2 and drivers -- so the
+    # 4-week combination is visible and auditable, not baked invisibly
+    # into one number.
+    NCOLS3 = 7
     row = r3 + 5
     ws3.cell(row=row, column=1, value="W2 Employees").font = BOLD_FONT
     row += 1
-    headers3 = ["Employee", "Days Worked (this upload)", "Tip Eligible?", "Share of Pool", "Tip $ Payout"]
+    headers3 = ["Employee", "This Period Days", "Prior Period Days", "Combined Days",
+                "Tip Eligible?", "Share of Pool", "Tip $ Payout"]
     for i, h in enumerate(headers3, start=1):
         ws3.cell(row=row, column=i, value=h)
     style_header(ws3, row, len(headers3))
@@ -744,9 +844,11 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         days_f = (f'=SUMIF({DAILY_SHEET}!$A${d_first_row}:$A${d_last_row},A{row},'
                   f'{DAILY_SHEET}!$H${d_first_row}:$H${d_last_row})')
         ws3.cell(row=row, column=2, value=days_f).font = FORMULA_FONT
+        ws3.cell(row=row, column=3, value=prior_w2_man_days.get(name, 0)).font = INPUT_FONT
+        ws3.cell(row=row, column=4, value=f"=B{row}+C{row}").font = FORMULA_FONT
         elig_f = f'=VLOOKUP(A{row},{CFG_SHEET}!$A${cfg_first_row}:$D${cfg_last_row},4,FALSE)'
-        ws3.cell(row=row, column=3, value=elig_f).font = FORMULA_FONT
-        for cc in range(1, 6):
+        ws3.cell(row=row, column=5, value=elig_f).font = FORMULA_FONT
+        for cc in range(1, NCOLS3 + 1):
             ws3.cell(row=row, column=cc).border = THIN
         row += 1
     w2_rows_end = row - 1
@@ -754,42 +856,46 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     row += 1
     ws3.cell(row=row, column=1, value="1099 Drivers (always 1.0 day credit/day driven)").font = BOLD_FONT
     row += 1
-    headers3b = ["Driver", "Days Driven", "Tip Eligible?", "Share of Pool", "Tip $ Payout"]
+    headers3b = ["Driver", "This Period Days", "Prior Period Days", "Combined Days",
+                 "Tip Eligible?", "Share of Pool", "Tip $ Payout"]
     for i, h in enumerate(headers3b, start=1):
         ws3.cell(row=row, column=i, value=h)
     style_header(ws3, row, len(headers3b))
     row += 1
     drv_rows_start = row
-    for dname, ddays in driver_days.items():
+    driver_names = sorted(set(driver_days) | set(prior_driver_info))
+    for dname in driver_names:
         ws3.cell(row=row, column=1, value=dname).font = INPUT_FONT
-        ws3.cell(row=row, column=2, value=ddays).font = INPUT_FONT
-        ws3.cell(row=row, column=3, value="y").font = INPUT_FONT
-        for cc in range(1, 6):
+        ws3.cell(row=row, column=2, value=driver_days.get(dname, 0)).font = INPUT_FONT
+        ws3.cell(row=row, column=3, value=prior_driver_info.get(dname, {}).get("days", 0)).font = INPUT_FONT
+        ws3.cell(row=row, column=4, value=f"=B{row}+C{row}").font = FORMULA_FONT
+        ws3.cell(row=row, column=5, value="y").font = INPUT_FONT
+        for cc in range(1, NCOLS3 + 1):
             ws3.cell(row=row, column=cc).border = THIN
         row += 1
-    drv_rows_end = row - 1 if driver_days else row
+    drv_rows_end = row - 1 if driver_names else row
 
     row += 1
-    ws3.cell(row=row, column=1, value="Grand Total Days (tip-eligible only -- denominator for Share)").font = BOLD_FONT
-    if driver_days:
-        grand_total_f = (f'=SUMIF(C{w2_rows_start}:C{w2_rows_end},"y",B{w2_rows_start}:B{w2_rows_end})'
-                          f'+SUM(B{drv_rows_start}:B{drv_rows_end})')
+    ws3.cell(row=row, column=1, value="Grand Total Combined Days (tip-eligible only -- denominator for Share)").font = BOLD_FONT
+    if driver_names:
+        grand_total_f = (f'=SUMIF(E{w2_rows_start}:E{w2_rows_end},"y",D{w2_rows_start}:D{w2_rows_end})'
+                          f'+SUM(D{drv_rows_start}:D{drv_rows_end})')
     else:
-        grand_total_f = f'=SUMIF(C{w2_rows_start}:C{w2_rows_end},"y",B{w2_rows_start}:B{w2_rows_end})'
-    gt_cell = ws3.cell(row=row, column=2, value=grand_total_f)
+        grand_total_f = f'=SUMIF(E{w2_rows_start}:E{w2_rows_end},"y",D{w2_rows_start}:D{w2_rows_end})'
+    gt_cell = ws3.cell(row=row, column=4, value=grand_total_f)
     gt_cell.font = FORMULA_FONT
-    gt_cell_ref = f"$B${row}"
-    for cc in (1, 2):
+    gt_cell_ref = f"$D${row}"
+    for cc in (1, 4):
         ws3.cell(row=row, column=cc).border = THIN
 
     for rr in list(range(w2_rows_start, w2_rows_end + 1)) + \
-            (list(range(drv_rows_start, drv_rows_end + 1)) if driver_days else []):
-        share_f = f'=IF(C{rr}="y",B{rr}/{gt_cell_ref},0)'
-        ws3.cell(row=rr, column=4, value=share_f).font = FORMULA_FONT
-        ws3.cell(row=rr, column=4).number_format = "0.0000%"
-        tip_f = f'=D{rr}*{netpool_cell}'
-        ws3.cell(row=rr, column=5, value=tip_f).font = FORMULA_FONT
-        ws3.cell(row=rr, column=5).number_format = "$#,##0.00"
+            (list(range(drv_rows_start, drv_rows_end + 1)) if driver_names else []):
+        share_f = f'=IF(E{rr}="y",D{rr}/{gt_cell_ref},0)'
+        ws3.cell(row=rr, column=6, value=share_f).font = FORMULA_FONT
+        ws3.cell(row=rr, column=6).number_format = "0.0000%"
+        tip_f = f'=F{rr}*{netpool_cell}'
+        ws3.cell(row=rr, column=7, value=tip_f).font = FORMULA_FONT
+        ws3.cell(row=rr, column=7).number_format = "$#,##0.00"
     autosize(ws3)
     TIPS_SHEET = "'3 - Man-Days & Tips Calc'"
 
@@ -864,7 +970,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             elif col_name == "Overtime Hours" and not is_salaried:
                 cell.value = f'=IFERROR(VLOOKUP({name_cell},{WEEKLY_SHEET}!$A${pt_first_row}:$D${pt_last_row},3,FALSE),0)'
             elif col_name == "CC Tips Owed" and not is_salaried:
-                cell.value = f'=IFERROR(VLOOKUP({name_cell},{TIPS_SHEET}!$A${w2_rows_start}:$E${w2_rows_end},5,FALSE),"")'
+                cell.value = f'=IFERROR(VLOOKUP({name_cell},{TIPS_SHEET}!$A${w2_rows_start}:$G${w2_rows_end},7,FALSE),"")'
             elif col_name == "2% S-Corp Medical" and name == ROD_ROW_NAME and rod_medical is not None:
                 cell.value = rod_medical
             elif col_name in DED_COLS:
@@ -898,19 +1004,20 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     for col_name, width in ADP_COLUMN_WIDTHS.items():
         ws5.column_dimensions[get_column_letter(col_index[col_name])].width = width
 
-    if driver_days:
+    if driver_days_for_tips:
         ws6 = wb.create_sheet("Driver Tip Payouts (1099s)")
-        r6 = title_block(ws6, "Driver Tip Payouts", [
-            "Not part of ADP Entry -- 1099 contractors aren't payroll. Pulled from " + TIPS_SHEET + ".",
-        ])
+        note = ["Not part of ADP Entry -- 1099 contractors aren't payroll. Pulled from " + TIPS_SHEET + "."]
+        if tip_week:
+            note.append("Days Driven here is THIS period's days plus the prior period's (the full 4-week window).")
+        r6 = title_block(ws6, "Driver Tip Payouts", note)
         for i, h in enumerate(["Driver", "Days Driven", "Tip $ Payout"], start=1):
             ws6.cell(row=r6, column=i, value=h)
         style_header(ws6, r6, 3)
         row = r6 + 1
-        for dname in driver_days:
+        for dname in driver_days_for_tips:
             ws6.cell(row=row, column=1, value=dname).font = INPUT_FONT
-            tips_f = f'=VLOOKUP(A{row},{TIPS_SHEET}!$A${drv_rows_start}:$E${drv_rows_end},5,FALSE)'
-            ws6.cell(row=row, column=2, value=driver_days[dname]).font = INPUT_FONT
+            tips_f = f'=VLOOKUP(A{row},{TIPS_SHEET}!$A${drv_rows_start}:$G${drv_rows_end},7,FALSE)'
+            ws6.cell(row=row, column=2, value=driver_days_for_tips[dname]).font = INPUT_FONT
             ws6.cell(row=row, column=3, value=tips_f).font = FORMULA_FONT
             ws6.cell(row=row, column=3).number_format = "$#,##0.00"
             for cc in range(1, 4):
@@ -936,7 +1043,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         recap_first_row = row
         for dname, info in driver_info.items():
             ws7.cell(row=row, column=1, value=dname).font = INPUT_FONT
-            tips_f = f'=VLOOKUP(A{row},{TIPS_SHEET}!$A${drv_rows_start}:$E${drv_rows_end},5,FALSE)'
+            tips_f = f'=VLOOKUP(A{row},{TIPS_SHEET}!$A${drv_rows_start}:$G${drv_rows_end},7,FALSE)'
             c = ws7.cell(row=row, column=2, value=tips_f)
             c.font = FORMULA_FONT
             c.number_format = "$#,##0.00"
@@ -1025,26 +1132,44 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 "department": employees[name]["department"],
                 "regularHours": computed.get(name, {}).get("regular_hours", 0),
                 "otHours": computed.get(name, {}).get("ot_hours", 0),
-                "manDays": computed.get(name, {}).get("man_days", 0),
+                # On a tip week this is the combined (this period + prior
+                # period) man-days actually used for the tip split below --
+                # not just this period's own man-days.
+                "manDays": w2_days_for_tips.get(name, 0),
                 "ccTipsOwed": w2_tips.get(name),
                 "ptoHours": pto_hours.get(name),
                 "eePurchases": ee_purchases.get(name),
                 "miscAmount": misc_amt.get(name),
                 "miscReimburse": misc_reimb.get(name),
             }
-            for name in order if name in names_with_hours
+            # Include anyone with hours this period, OR anyone who still gets
+            # a tip payout purely from carried-over prior-period man-days
+            # (e.g. someone on leave this period but tip-eligible from the
+            # prior period) -- otherwise their payout would be correct in
+            # the workbook but invisible in this on-screen preview.
+            for name in order if name in names_with_hours or w2_tips.get(name)
         ],
         "drivers": [
             {
                 "name": dname,
+                # On a tip week this is the combined (this period + prior
+                # period) days actually used for the tip split below --
+                # not just this period's own days driven.
                 "daysDriven": ddays,
                 "tipPayout": driver_tips.get(dname),
                 "tips": driver_tips.get(dname, 0),
                 "deliveries": driver_info.get(dname, {}).get("deliveries", 0),
                 "setups": driver_info.get(dname, {}).get("setups", 0),
             }
-            for dname, ddays in driver_days.items()
+            for dname, ddays in driver_days_for_tips.items()
         ],
+        "isTipWeek": tip_week,
+        # THIS period's own man-days only (never the combined figure above)
+        # -- main.py persists this onto the tipsPeriods doc on finalize, so
+        # a future tip week's report can pull it back as "prior period"
+        # data. Persisting the combined number here instead would double-
+        # count on every subsequent tip week.
+        "w2ManDaysThisPeriod": w2_days_this_period,
         "warnings": warnings,
     }
     return buf.read(), summary, warnings, consumed_ids

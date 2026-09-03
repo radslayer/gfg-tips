@@ -21,7 +21,7 @@ enough to stop a direct call from someone in the wrong role.
 """
 import base64
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import firebase_admin
 from firebase_admin import firestore
@@ -154,17 +154,23 @@ def list_employee_names(req: https_fn.CallableRequest):
 
 @https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_512, timeout_sec=120)
 def generate_payroll_report(req: https_fn.CallableRequest):
-    """Owner-only. Builds the payroll report from the uploaded raw
-    timeclock CSV plus every currently-pending (payrollDate == null),
-    non-voided request in the four payroll-request collections -- except
-    PTO, which additionally only counts if its targetPayrollDate matches
-    this run's pay_period_id (see the filtering below); the other three
-    types always sweep in regardless of pay period. When `finalize` is true, stamps payrollDate +
-    recordedAt/recordedBy on every request it used, so it's never picked up
-    again -- this IS the official record of "this request was included in
-    payroll on this date," replacing the old Excel tracker's 'Recorded in
-    ADP' column. When finalize is false, nothing in Firestore is touched --
-    a safe preview."""
+    """Owner-only. Runs every biweekly pay period now, not just tip weeks
+    (fixed 9/3/2026 -- see report_builder.is_tip_week). Builds the payroll
+    report from the uploaded raw timeclock CSV plus every currently-pending
+    (payrollDate == null), non-voided request in the four payroll-request
+    collections -- except PTO, which additionally only counts if its
+    targetPayrollDate matches this run's pay_period_id (see the filtering
+    below); the other three types always sweep in regardless of pay period.
+    On a tip payout week, also pulls the prior biweekly period's driver
+    days (if on file) so the tip split covers the full 4-week window --
+    see prior_driver_info below and report_builder.build_report's
+    docstring for the known W2-side limitation this doesn't yet fix. When
+    `finalize` is true, stamps payrollDate + recordedAt/recordedBy on
+    every request it used, so it's never picked up again -- this IS the
+    official record of "this request was included in payroll on this
+    date," replacing the old Excel tracker's 'Recorded in ADP' column.
+    When finalize is false, nothing in Firestore is touched -- a safe
+    preview."""
     db = firestore.client()
     role = _require_role(req, db, {"admin"})
 
@@ -182,20 +188,21 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
             "The raw timeclock CSV is required.")
 
-    period_doc = db.collection("tipsPeriods").document(pay_period_id).get()
-    if not period_doc.exists:
-        raise https_fn.HttpsError(
-            https_fn.FunctionsErrorCode.NOT_FOUND,
-            f"No tipsPeriods document found for '{pay_period_id}'. "
-            "Enter and save that period's tip-pool numbers first.")
-    period = period_doc.to_dict()
-
     try:
         pay_date = datetime.strptime(pay_period_id, "%Y-%m-%d")
     except ValueError:
         raise https_fn.HttpsError(
             https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
             f"'{pay_period_id}' isn't a YYYY-MM-DD pay date.")
+
+    period_doc = db.collection("tipsPeriods").document(pay_period_id).get()
+    if not period_doc.exists:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.NOT_FOUND,
+            f"No tipsPeriods document found for '{pay_period_id}'. "
+            "Enter and save that period's driver rows (and, on a tip week, "
+            "the tip-pool numbers) first.")
+    period = period_doc.to_dict()
 
     try:
         csv_text = base64.b64decode(csv_b64).decode("utf-8-sig")
@@ -219,6 +226,29 @@ def generate_payroll_report(req: https_fn.CallableRequest):
         for d in (period.get("drivers") or [])
         if d.get("name")
     }
+
+    # On a tip payout week, the tip split needs the prior (non-tip) biweekly
+    # period's man-days/days-driven too -- see report_builder.is_tip_week /
+    # the 9/3/2026 schema fix, which treats W2 employees and 1099 drivers
+    # identically here. Drivers' days are Larry's own input, already sitting
+    # on the prior tipsPeriods doc; W2 man-days are computed by a report run,
+    # so they're only there if that prior period's report was finalized
+    # (see the w2ManDays write below) -- if it wasn't, this just comes back
+    # empty and build_report's warnings banner says so.
+    prior_driver_info = None
+    prior_w2_man_days = None
+    if report_builder.is_tip_week(pay_date):
+        prior_id = (pay_date - timedelta(days=14)).strftime("%Y-%m-%d")
+        prior_doc = db.collection("tipsPeriods").document(prior_id).get()
+        if prior_doc.exists:
+            prior_data = prior_doc.to_dict()
+            prior_driver_info = {
+                d["name"]: {"days": d.get("days", 0)}
+                for d in (prior_data.get("drivers") or [])
+                if d.get("name")
+            }
+            prior_w2_man_days = prior_data.get("w2ManDays") or {}
+
     sister_map = _load_sister_map_from_firestore(db)
 
     pending = {}
@@ -267,6 +297,8 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             pending_misc_amt=pending["miscAmounts"],
             pending_misc_reimb=pending["miscReimbursements"],
             sister_map=sister_map,
+            prior_driver_info=prior_driver_info,
+            prior_w2_man_days=prior_w2_man_days,
         )
     except report_builder.ReportError as e:
         raise https_fn.HttpsError(https_fn.FunctionsErrorCode.INVALID_ARGUMENT, str(e))
@@ -284,8 +316,18 @@ def generate_payroll_report(req: https_fn.CallableRequest):
                     "recordedBy": recorded_by,
                 })
                 finalized_count += 1
-        if finalized_count:
-            batch.commit()
+        # Persist THIS period's own W2 man-days (never the combined tip-week
+        # figure) onto this pay period's tipsPeriods doc, so a future tip
+        # week's report can pull it back as "prior period" data -- the same
+        # role drivers' own "days" field already plays, since Larry enters
+        # and saves that directly. Written every finalize, tip week or not,
+        # so the chain never has a gap.
+        batch.set(
+            db.collection("tipsPeriods").document(pay_period_id),
+            {"w2ManDays": summary.get("w2ManDaysThisPeriod") or {}},
+            merge=True,
+        )
+        batch.commit()
 
     return {
         "summary": summary,
