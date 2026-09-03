@@ -277,6 +277,8 @@
     </div>
     <button class="primary" id="signInBtn" style="width:100%">Sign in</button>
     <div id="loginMsg" class="msg error"></div>
+    <button type="button" class="link" id="forgotPasswordBtn" style="margin-top:10px;">Forgot password?</button>
+    <div id="forgotMsg" class="msg small"></div>
   </div>
 
   <!-- Main app (shown after sign-in) -->
@@ -542,6 +544,61 @@
           <tbody id="aliasRows"></tbody>
         </table>
       </div>
+
+    </div>
+
+    <div class="card hidden" id="adminCard">
+      <h2>Admin (Owner only)</h2>
+      <div class="small" style="margin-bottom:14px;">
+        Create sign-in accounts, change what someone's account can do, or
+        send a password reset -- no Firebase Console needed for any of
+        this anymore.
+      </div>
+
+      <h2 style="margin-top:0;">Add a user</h2>
+      <div class="small" style="margin-bottom:10px;">
+        Creates the sign-in account with the role you pick. Nobody,
+        including you, ever sets or sees their password -- right after the
+        account is created, they're sent a password-reset email (the same
+        one "Forgot password?" sends) so they set their own on first use.
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="newUserEmail">Email</label>
+          <input type="email" id="newUserEmail" />
+        </div>
+        <div class="field">
+          <label for="newUserName">Name (optional)</label>
+          <input type="text" id="newUserName" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="newUserRole">Role</label>
+        <select id="newUserRole">
+          <option value="entry">Entry</option>
+          <option value="manager">Manager</option>
+          <option value="admin">Owner</option>
+        </select>
+      </div>
+      <button id="createUserBtn">Create account</button>
+      <div id="createUserMsg" class="msg"></div>
+
+      <h2 style="margin-top:28px;">Users &amp; Roles</h2>
+      <div class="small" style="margin-bottom:10px;">
+        Every account that can sign in, and what they can currently do.
+        Changing a role here takes effect immediately -- no separate
+        Firestore edit or script needed. Owner sees everything; Manager can
+        log payroll requests and use the tips form as backup for Larry;
+        Entry is the tips form only.
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Email</th><th>Role</th><th></th><th></th></tr></thead>
+          <tbody id="userRoleRows"></tbody>
+        </table>
+      </div>
+      <button id="refreshUsersBtn" style="margin-top:10px;">Refresh list</button>
+      <div id="userRoleMsg" class="msg small"></div>
     </div>
 
     <div class="card hidden" id="reportCard">

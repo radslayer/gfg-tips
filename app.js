@@ -9,7 +9,7 @@
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut,
+  getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc, collection, getDocs, orderBy, query,
@@ -65,6 +65,18 @@ const PAY_PERIOD_START = "2026-07-17";
 const PAY_PERIOD_INTERVAL_DAYS = 14;
 const PAY_PERIOD_COUNT = 150; // ~5.7 years out
 
+// Periods before this are already paid out (per Rod, 9/3/2026) -- he's not
+// going back to backfill driver rows/tip numbers for anything already done,
+// so the dropdown shouldn't offer those dates or ever default to one.
+// Deliberately does NOT change PAY_PERIOD_START itself -- that has to stay
+// fixed at the real historical anchor so isTipWeek()/priorPayPeriodId()
+// keep computing the correct tip-week parity (8/28/2026 still correctly
+// resolves as 9/11/2026's "prior period" even though 8/28 is also now the
+// first period selectable here). Already-submitted periods before this
+// floor still show up fine in the "Past pay periods" history table below,
+// since that's read straight from Firestore, not from this list.
+const PAY_PERIOD_DISPLAY_FLOOR = "2026-08-28";
+
 function generatePayPeriodDates(startStr, intervalDays, count) {
   const [y, m, d] = startStr.split("-").map(Number);
   const cur = new Date(y, m - 1, d);
@@ -81,7 +93,7 @@ function generatePayPeriodDates(startStr, intervalDays, count) {
 
 const PAY_PERIOD_DATES = generatePayPeriodDates(
   PAY_PERIOD_START, PAY_PERIOD_INTERVAL_DAYS, PAY_PERIOD_COUNT
-);
+).filter((dt) => dt >= PAY_PERIOD_DISPLAY_FLOOR);
 
 // Only every OTHER payroll date actually distributes tips (net tip pool
 // split by man-days/days-driven) -- the rest are still real payroll runs
@@ -136,6 +148,7 @@ const SECTIONS = [
   { id: "formCard", label: "Tip Pool", roles: ["admin", "manager", "entry"] },
   { id: "requestsCard", label: "Payroll Requests", roles: ["admin", "manager"] },
   { id: "employeesCard", label: "Employees", roles: ["admin"] },
+  { id: "adminCard", label: "Admin", roles: ["admin"] },
   { id: "reportCard", label: "Payroll Report", roles: ["admin"] },
 ];
 let activeSectionId = null;
@@ -256,6 +269,31 @@ $("signInBtn").addEventListener("click", async () => {
 
 $("signOutBtn").addEventListener("click", () => signOut(auth));
 
+// "Forgot password?" -- uses whatever's typed in the email field (Firebase
+// only sends the reset email if that address actually has an account; it
+// deliberately doesn't reveal whether it found one, so the message reads
+// the same either way). If the email lands nowhere, check spam/junk and
+// "All Mail" first -- Firebase's own default sender is a common false-
+// positive for spam filters -- and confirm the address matches exactly
+// what's on the account in the Authentication tab.
+$("forgotPasswordBtn").addEventListener("click", async () => {
+  setMsg($("forgotMsg"), "", "");
+  const email = $("email").value.trim();
+  if (!email) {
+    setMsg($("forgotMsg"), "Enter your email above first, then click this again.", "error");
+    return;
+  }
+  try {
+    await sendPasswordResetEmail(auth, email);
+    setMsg($("forgotMsg"),
+      "If that email has an account, a reset link was just sent to it. " +
+      "Check spam/junk (and All Mail in Gmail) if it doesn't show up in a few minutes.",
+      "ok");
+  } catch (err) {
+    setMsg($("forgotMsg"), "Couldn't send it: " + err.message, "error");
+  }
+});
+
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
     currentRole = null;
@@ -284,6 +322,7 @@ onAuthStateChanged(auth, async (user) => {
     loadEmployees();
     loadPayrollRequests();
     loadSisterAliases();
+    loadUserRoles();
   } else if (currentRole === "manager") {
     loadEmployees();
     loadPayrollRequests();
@@ -659,6 +698,146 @@ $("empSaveBtn").addEventListener("click", async () => {
     loadEmployees();
   } catch (err) {
     setMsg($("empMsg"), "Save failed: " + err.message, "error");
+  }
+});
+
+// ---------- Users & Roles (Owner only) ----------
+// Recovery tool added 9/3/2026 after Rod got locked out of his own Owner
+// account with no way back in except hand-editing Firestore's roles/{uid}
+// doc AND separately running sync_role_claims.py to sync the custom claim
+// -- easy to get out of sync since it's two manual steps in two different
+// places. set_user_role (Cloud Function) does both atomically now.
+async function loadUserRoles() {
+  setMsg($("userRoleMsg"), "Loading...", "");
+  try {
+    const call = httpsCallable(functions, "list_users_with_roles");
+    const res = await call({});
+    renderUserRoleRows(res.data.users || []);
+    setMsg($("userRoleMsg"), "", "");
+  } catch (err) {
+    setMsg($("userRoleMsg"), "Couldn't load the user list: " + err.message, "error");
+  }
+}
+
+function renderUserRoleRows(users) {
+  const tbody = $("userRoleRows");
+  tbody.innerHTML = "";
+  users.forEach((u) => {
+    const tr = document.createElement("tr");
+
+    const emailTd = document.createElement("td");
+    emailTd.textContent = u.email;
+    tr.appendChild(emailTd);
+
+    const roleTd = document.createElement("td");
+    const sel = document.createElement("select");
+    ["admin", "manager", "entry"].forEach((r) => {
+      const opt = document.createElement("option");
+      opt.value = r;
+      opt.textContent = ROLE_LABELS[r];
+      sel.appendChild(opt);
+    });
+    if (u.role === "none") {
+      const opt = document.createElement("option");
+      opt.value = "none";
+      opt.textContent = "(no role assigned)";
+      sel.appendChild(opt);
+    }
+    sel.value = u.role;
+    roleTd.appendChild(sel);
+    tr.appendChild(roleTd);
+
+    const actionTd = document.createElement("td");
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save";
+    saveBtn.addEventListener("click", async () => {
+      const newRole = sel.value;
+      if (newRole === "none") {
+        setMsg($("userRoleMsg"), "Pick an actual role -- there's no \"unassign\" action here.", "error");
+        return;
+      }
+      saveBtn.disabled = true;
+      try {
+        const call = httpsCallable(functions, "set_user_role");
+        await call({ uid: u.uid, role: newRole });
+        setMsg($("userRoleMsg"), `${u.email} is now ${ROLE_LABELS[newRole]}.`, "ok");
+        loadUserRoles();
+      } catch (err) {
+        setMsg($("userRoleMsg"), "Failed: " + err.message, "error");
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+    actionTd.appendChild(saveBtn);
+    tr.appendChild(actionTd);
+
+    // Same sendPasswordResetEmail() the "Forgot password?" link on the
+    // sign-in screen uses -- lets the Owner trigger a reset for someone
+    // else (e.g. Larry says he's locked out) without needing the
+    // Firebase Console.
+    const resetTd = document.createElement("td");
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "link";
+    resetBtn.textContent = "Send password reset";
+    resetBtn.addEventListener("click", async () => {
+      resetBtn.disabled = true;
+      try {
+        await sendPasswordResetEmail(auth, u.email);
+        setMsg($("userRoleMsg"), `Reset email sent to ${u.email}.`, "ok");
+      } catch (err) {
+        setMsg($("userRoleMsg"), "Couldn't send it: " + err.message, "error");
+      } finally {
+        resetBtn.disabled = false;
+      }
+    });
+    resetTd.appendChild(resetBtn);
+    tr.appendChild(resetTd);
+
+    tbody.appendChild(tr);
+  });
+}
+
+$("refreshUsersBtn").addEventListener("click", loadUserRoles);
+
+// ---------- Add a user (Owner only) ----------
+// Creates the Auth account + role in one step via the create_user Cloud
+// Function, then immediately triggers a real password-reset email so the
+// new person sets their own password -- nobody, Rod included, ever
+// handles a real password for someone else's account.
+$("createUserBtn").addEventListener("click", async () => {
+  setMsg($("createUserMsg"), "", "");
+  const email = $("newUserEmail").value.trim();
+  const displayName = $("newUserName").value.trim();
+  const role = $("newUserRole").value;
+  if (!email) {
+    setMsg($("createUserMsg"), "Enter an email address.", "error");
+    return;
+  }
+  $("createUserBtn").disabled = true;
+  try {
+    const call = httpsCallable(functions, "create_user");
+    await call({ email, displayName, role });
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setMsg($("createUserMsg"),
+        `Account created for ${email} (${ROLE_LABELS[role]}) -- a password-reset email was just sent so they can set their own password.`,
+        "ok");
+    } catch (err) {
+      setMsg($("createUserMsg"),
+        `Account created for ${email}, but the reset email failed to send (${err.message}). ` +
+        "Use \"Send password reset\" next to their name below to try again.",
+        "error");
+    }
+    $("newUserEmail").value = "";
+    $("newUserName").value = "";
+    $("newUserRole").value = "entry";
+    loadUserRoles();
+  } catch (err) {
+    setMsg($("createUserMsg"), "Couldn't create that account: " + err.message, "error");
+  } finally {
+    $("createUserBtn").disabled = false;
   }
 });
 

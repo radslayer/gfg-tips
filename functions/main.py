@@ -152,6 +152,143 @@ def list_employee_names(req: https_fn.CallableRequest):
     return {"employees": names}
 
 
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=30)
+def list_users_with_roles(req: https_fn.CallableRequest):
+    """Owner-only. Lists every Firebase Auth user together with their
+    current role (from the roles/{uid} Firestore doc -- "none" if that
+    account has no doc yet), powering the Owner-only "Users & Roles" admin
+    tool (added 9/3/2026, after Rod got locked out of his own Owner
+    account and had no way back in except hand-editing Firestore and the
+    Authentication tab separately)."""
+    db = firestore.client()
+    _require_role(req, db, {"admin"})
+
+    from firebase_admin import auth as fb_auth
+
+    role_by_uid = {
+        d.id: (d.to_dict() or {}).get("role")
+        for d in db.collection("roles").stream()
+    }
+
+    users = []
+    page = fb_auth.list_users()
+    while page:
+        for user in page.users:
+            users.append({
+                "uid": user.uid,
+                "email": user.email or "(no email on file)",
+                "role": role_by_uid.get(user.uid) or "none",
+            })
+        page = page.get_next_page()
+    users.sort(key=lambda u: u["email"].lower())
+    return {"users": users}
+
+
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=30)
+def set_user_role(req: https_fn.CallableRequest):
+    """Owner-only. Sets a user's role in ONE atomic step: writes
+    roles/{uid} in Firestore (the human-readable record, still visible and
+    hand-editable in the console same as before) AND sets the matching
+    custom claim on their Auth token -- what firestore.rules actually
+    authorizes direct client reads/writes against (see the note in
+    firestore.rules on myRole()). Before this function existed, a role
+    change needed BOTH a Firestore edit AND a separate run of
+    sync_role_claims.py, and forgetting the second step left the UI and
+    the actual access rights out of sync -- this closes that gap.
+    sync_role_claims.py still exists as a break-glass fallback for anyone
+    editing roles/{uid} by hand instead of using this tool.
+
+    Refuses to move the CALLER's own account off admin if they're the only
+    admin on file -- that would lock everyone out of every Owner tool
+    (including this one) with no way back in except by hand in the
+    Firebase console."""
+    db = firestore.client()
+    _require_role(req, db, {"admin"})
+
+    data = req.data or {}
+    target_uid = (data.get("uid") or "").strip()
+    new_role = (data.get("role") or "").strip()
+
+    if new_role not in ("admin", "manager", "entry"):
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            "Role must be one of: admin, manager, entry.")
+    if not target_uid:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Missing target user.")
+
+    if target_uid == req.auth.uid and new_role != "admin":
+        admin_count = sum(
+            1 for d in db.collection("roles").stream()
+            if (d.to_dict() or {}).get("role") == "admin"
+        )
+        if admin_count <= 1:
+            raise https_fn.HttpsError(
+                https_fn.FunctionsErrorCode.FAILED_PRECONDITION,
+                "You're the only Owner account on file -- promote someone "
+                "else to Owner first, since this change would otherwise "
+                "lock everyone out of the Owner tools.")
+
+    from firebase_admin import auth as fb_auth
+
+    db.collection("roles").document(target_uid).set({"role": new_role})
+    fb_auth.set_custom_user_claims(target_uid, {"role": new_role})
+
+    return {"ok": True}
+
+
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=30)
+def create_user(req: https_fn.CallableRequest):
+    """Owner-only. Creates a brand-new Firebase Auth account with a role
+    already attached (roles/{uid} doc + matching custom claim, same as
+    set_user_role), so adding someone no longer requires the Firebase
+    Console at all. Never sets a real password: a random one-time value is
+    generated server-side and discarded immediately -- the account is
+    unusable until the new person sets their own password, which the
+    front end triggers right after this returns by calling the same
+    sendPasswordResetEmail() the "Forgot password?" link uses. Nobody,
+    including Rod, ever sees or transmits a password this way."""
+    db = firestore.client()
+    _require_role(req, db, {"admin"})
+
+    data = req.data or {}
+    email = (data.get("email") or "").strip().lower()
+    role = (data.get("role") or "").strip()
+    display_name = (data.get("displayName") or "").strip() or None
+
+    if not email:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Email is required.")
+    if role not in ("admin", "manager", "entry"):
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            "Role must be one of: admin, manager, entry.")
+
+    from firebase_admin import auth as fb_auth
+    import secrets
+
+    try:
+        user = fb_auth.create_user(
+            email=email,
+            password=secrets.token_urlsafe(24),  # random, never stored or returned
+            display_name=display_name,
+        )
+    except fb_auth.EmailAlreadyExistsError:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.ALREADY_EXISTS,
+            f"An account already exists for {email}. Change their role "
+            "below instead of creating a new one.")
+    except ValueError as e:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            f"Couldn't create that account: {e}")
+
+    db.collection("roles").document(user.uid).set({"role": role})
+    fb_auth.set_custom_user_claims(user.uid, {"role": role})
+
+    return {"uid": user.uid, "email": email}
+
+
 @https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_512, timeout_sec=120)
 def generate_payroll_report(req: https_fn.CallableRequest):
     """Owner-only. Runs every biweekly pay period now, not just tip weeks
