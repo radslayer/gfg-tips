@@ -50,19 +50,20 @@ const REQ_TYPE_DISPLAY = {
   miscReimbursements: "Reimbursement",
 };
 
-// Tips periods run every 4 weeks (every other biweekly pay period), always
-// on a Friday. First one is 4 weeks after the 8/28/2026 pay date; every
-// one after that is another 4 weeks (28 days) later. Generating a long
-// list up front means the dropdown never needs to change dynamically --
-// extend PAY_PERIOD_COUNT someday if this list ever runs out.
-const PAY_PERIOD_START = "2026-09-25";
-const PAY_PERIOD_INTERVAL_DAYS = 28;
-const PAY_PERIOD_COUNT = 60; // ~4.6 years out
-
-// One-off historical/test periods that don't fall on the generated
-// cadence above -- added by hand as needed (e.g. to pressure-test the
-// tips calculation against a known real past period).
-const EXTRA_PAY_PERIOD_DATES = ["2026-08-14"];
+// Every real ADP payroll date, every 2 weeks, always a Friday (fixed
+// 9/3/2026, per Rod -- corrects the earlier "every 4 weeks" schema, which
+// wrongly assumed 8/28/2026 was a tip date). PTO/Purchases/Misc/
+// Reimbursements and Larry's driver days/deliveries/setups are all
+// entered on this same biweekly cadence now. Generating a long list up
+// front means the dropdown never needs to change dynamically -- extend
+// PAY_PERIOD_COUNT someday if this list ever runs out.
+//
+// PAY_PERIOD_START matches PAY_DATE_ANCHOR in report_builder.py exactly
+// -- keep both in sync if this ever changes, since isTipWeek() below
+// (and its Python twin, is_tip_week()) both count 14-day periods from it.
+const PAY_PERIOD_START = "2026-07-17";
+const PAY_PERIOD_INTERVAL_DAYS = 14;
+const PAY_PERIOD_COUNT = 150; // ~5.7 years out
 
 function generatePayPeriodDates(startStr, intervalDays, count) {
   const [y, m, d] = startStr.split("-").map(Number);
@@ -78,10 +79,36 @@ function generatePayPeriodDates(startStr, intervalDays, count) {
   return dates;
 }
 
-const PAY_PERIOD_DATES = [
-  ...EXTRA_PAY_PERIOD_DATES,
-  ...generatePayPeriodDates(PAY_PERIOD_START, PAY_PERIOD_INTERVAL_DAYS, PAY_PERIOD_COUNT),
-].sort();
+const PAY_PERIOD_DATES = generatePayPeriodDates(
+  PAY_PERIOD_START, PAY_PERIOD_INTERVAL_DAYS, PAY_PERIOD_COUNT
+);
+
+// Only every OTHER payroll date actually distributes tips (net tip pool
+// split by man-days/days-driven) -- the rest are still real payroll runs
+// (drivers still get paid Deliveries $/Setups $ that period), just with
+// no tip pool that week. Confirmed 9/3/2026 (Rod): 8/28/2026 was NOT a
+// tip week, 9/11/2026 IS, and it alternates strictly from there with no
+// exceptions (a holiday-shifted Friday doesn't change which "slot" a
+// date falls in). Counting 14-day periods from PAY_PERIOD_START, this
+// also matches the already-confirmed historical data: 8/14/2026 (2
+// periods from anchor, even) was a real tip week; 8/28/2026 (3 periods,
+// odd) wasn't; 9/11/2026 (4 periods, even) is.
+function daysBetween(aStr, bStr) {
+  const toUTC = (s) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  return Math.round((toUTC(bStr) - toUTC(aStr)) / 86400000);
+}
+function isTipWeek(dateStr) {
+  const periods = daysBetween(PAY_PERIOD_START, dateStr) / PAY_PERIOD_INTERVAL_DAYS;
+  return (((Math.round(periods) % 2) + 2) % 2) === 0;
+}
+function priorPayPeriodId(dateStr) {
+  const toUTC = (s) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  const d = new Date(toUTC(dateStr) - PAY_PERIOD_INTERVAL_DAYS * 86400000);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 function formatPayDateLabel(dateStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -375,6 +402,7 @@ async function loadPeriod(payDate) {
   }
   recomputeNetPool();
   renderPeriodStatus();
+  await applyTipWeekVisibility();
   applyEditLock();
 }
 
@@ -382,9 +410,83 @@ function renderPeriodStatus() {
   const pill = document.createElement("span");
   pill.className = "status-pill" + (currentPeriodStatus === "submitted" ? " submitted" : "");
   pill.textContent = currentPeriodStatus === "submitted" ? "Submitted" : "Open / draft";
+  const tipPill = document.createElement("span");
+  tipPill.className = "status-pill";
+  tipPill.style.marginLeft = "8px";
+  tipPill.textContent = isTipWeek(currentPeriodId) ? "Tip payout week" : "Regular payroll (no tips)";
   $("periodStatus").innerHTML = "";
   $("periodStatus").appendChild(pill);
+  $("periodStatus").appendChild(tipPill);
 }
+
+// Shows the tip-pool revenue fields (and the driver tip-split recap) only
+// on a tip payout week; a regular payroll date just shows the driver
+// Deliveries/Setups entry, since that's still paid every period.
+async function applyTipWeekVisibility() {
+  const tipWeek = isTipWeek(currentPeriodId);
+  if (tipWeek) {
+    show($("tipPoolFields"));
+    hide($("noTipPoolNote"));
+  } else {
+    hide($("tipPoolFields"));
+    show($("noTipPoolNote"));
+  }
+  await loadTipSplitRecap(tipWeek);
+}
+
+// On a tip week, the payout combines this period's driver days-driven
+// with the prior (non-tip) period's -- this fetches that prior period's
+// saved driver rows (if any) and renders a preview table so it's clear
+// what's about to feed the split, before the full report runs.
+async function loadTipSplitRecap(tipWeek) {
+  if (!tipWeek) {
+    hide($("tipSplitRecap"));
+    $("tipSplitRecapRows").innerHTML = "";
+    return;
+  }
+  const priorId = priorPayPeriodId(currentPeriodId);
+  $("tipSplitPriorLabel").textContent = `Prior period (${formatShortDate(priorId)}) days`;
+  let priorDrivers = [];
+  try {
+    const priorSnap = await getDoc(doc(db, "tipsPeriods", priorId));
+    if (priorSnap.exists()) priorDrivers = priorSnap.data().drivers || [];
+  } catch (err) {
+    // If this fails, just show "(none on file)" below rather than blocking the page.
+  }
+  const priorDays = {};
+  priorDrivers.forEach((d) => { if (d.name) priorDays[d.name] = Number(d.days) || 0; });
+
+  const thisDays = {};
+  readDriverRows().forEach((d) => { thisDays[d.name] = Number(d.days) || 0; });
+
+  const names = Array.from(new Set([...Object.keys(priorDays), ...Object.keys(thisDays)])).sort();
+  $("tipSplitRecapRows").innerHTML = "";
+  if (!names.length) {
+    $("tipSplitRecapRows").innerHTML = `<tr><td colspan="4" class="small">No driver rows yet.</td></tr>`;
+  } else {
+    names.forEach((name) => {
+      const prior = priorDays[name] ?? null;
+      const thisP = thisDays[name] ?? 0;
+      const combined = (prior || 0) + thisP;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${name}</td>
+        <td>${prior === null ? "(none on file)" : prior}</td>
+        <td>${thisP}</td>
+        <td>${combined}</td>
+      `;
+      $("tipSplitRecapRows").appendChild(tr);
+    });
+  }
+  show($("tipSplitRecap"));
+}
+// Keep the recap's "This period days" column live as Larry edits driver
+// rows, without waiting for a save.
+$("driverRows").addEventListener("input", (e) => {
+  if (e.target.classList.contains("driverDays") && isTipWeek(currentPeriodId)) {
+    loadTipSplitRecap(true);
+  }
+});
 
 function applyEditLock() {
   // Larry (entry) and Mike/Thao (manager, using this as backup) can't edit
@@ -407,11 +509,16 @@ async function savePeriod(status) {
     setMsg($("formMsg"), "Pick a pay date first.", "error");
     return;
   }
+  const tipWeek = isTipWeek(currentPeriodId);
   const payload = {
     payDate: currentPeriodId,
-    totalRevenue: Number($("totalRevenue").value) || 0,
-    bonnieBrae: Number($("bonnieBrae").value) || 0,
-    swift: Number($("swift").value) || 0,
+    isTipWeek: tipWeek,
+    // Revenue/deduction fields only apply on a tip week -- saved as 0 on a
+    // regular payroll date so there's nothing stale left over if this date
+    // ever mistakenly got treated as a tip week somewhere.
+    totalRevenue: tipWeek ? (Number($("totalRevenue").value) || 0) : 0,
+    bonnieBrae: tipWeek ? (Number($("bonnieBrae").value) || 0) : 0,
+    swift: tipWeek ? (Number($("swift").value) || 0) : 0,
     drivers: readDriverRows(),
     status,
     submittedBy: auth.currentUser.email,
@@ -439,12 +546,16 @@ async function loadPeriodsHistory() {
   $("periodsHistoryRows").innerHTML = "";
   snap.forEach((docSnap) => {
     const d = docSnap.data();
+    // isTipWeek is stamped on save going forward; fall back to computing it
+    // for any older record saved before that field existed.
+    const tipWeek = d.isTipWeek ?? isTipWeek(d.payDate || docSnap.id);
     const net = (d.totalRevenue || 0) - (d.bonnieBrae || 0) - (d.swift || 0);
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${d.payDate}</td>
+      <td>${tipWeek ? "Yes" : "No"}</td>
       <td>${d.status === "submitted" ? "Submitted" : "Open / draft"}</td>
-      <td>${money(net)}</td>
+      <td>${tipWeek ? money(net) : "&mdash;"}</td>
       <td><button class="link openPeriodBtn" type="button">open</button></td>
     `;
     tr.querySelector(".openPeriodBtn").addEventListener("click", () => {
