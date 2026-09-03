@@ -128,8 +128,14 @@
   }
   button:disabled { opacity: 0.55; cursor: not-allowed; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 13px; overflow-wrap: anywhere; }
   th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; }
+  .nowrap { white-space: nowrap; }
+  /* Pending/History request tables specifically: fixed column widths sized
+     to fit within the card without a horizontal scrollbar, since these
+     have more columns crammed into the same width than the app's other
+     tables. */
+  table.requests-table { table-layout: fixed; }
   .net-pool {
     font-weight: bold;
     font-size: 16px;
@@ -397,7 +403,11 @@
 
       <h2 style="margin-top:24px;">Pending (not yet on a payroll run)</h2>
       <div class="table-wrap">
-        <table>
+        <table class="requests-table">
+          <colgroup>
+            <col style="width:13%"><col style="width:15%"><col style="width:12%">
+            <col style="width:15%"><col style="width:37%"><col style="width:8%">
+          </colgroup>
           <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th></th></tr></thead>
           <tbody id="pendingRows"></tbody>
         </table>
@@ -405,7 +415,11 @@
 
       <h2 style="margin-top:24px;">History (already on a payroll run)</h2>
       <div class="table-wrap">
-        <table>
+        <table class="requests-table">
+          <colgroup>
+            <col style="width:13%"><col style="width:15%"><col style="width:12%">
+            <col style="width:15%"><col style="width:31%"><col style="width:14%">
+          </colgroup>
           <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th>On payroll date</th></tr></thead>
           <tbody id="historyRows"></tbody>
         </table>

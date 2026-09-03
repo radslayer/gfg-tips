@@ -23,6 +23,13 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const functions = getFunctions(app);
 
+// A human name for "who did this" fields (enteredBy/lastEditedBy) instead
+// of a raw email address -- falls back to the email itself for any account
+// that doesn't have a display name set in Firebase Auth.
+function currentUserLabel() {
+  return auth.currentUser.displayName || auth.currentUser.email;
+}
+
 const DEFAULT_DRIVERS = ["Richard Haselton", "Ross Pullen", "Randy Pruitt"];
 
 const ROLE_LABELS = { admin: "Owner", manager: "Manager", entry: "Entry" };
@@ -81,6 +88,15 @@ function formatPayDateLabel(dateStr) {
   return new Date(y, m - 1, d).toLocaleDateString(undefined, {
     year: "numeric", month: "short", day: "numeric",
   });
+}
+
+// Compact "9/3/26" form -- used in the Pending/History request tables,
+// which are narrower than the rest of the app, so the full "2026-09-03"
+// ISO string doesn't have room and was wrapping mid-word.
+function formatShortDate(dateStr) {
+  if (!dateStr) return "";
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return `${m}/${d}/${String(y).slice(2)}`;
 }
 
 // Each stacked card is now a "tab section" -- shown one at a time via the
@@ -783,7 +799,7 @@ $("reqSubmitBtn").addEventListener("click", async () => {
       // no way to remove it from the old one.
       await updateDoc(doc(db, type, editingRequestId), {
         ...payload,
-        lastEditedBy: auth.currentUser.email,
+        lastEditedBy: currentUserLabel(),
         lastEditedAt: new Date().toISOString(),
       });
       setMsg($("reqMsg"), "Updated.", "ok");
@@ -791,7 +807,7 @@ $("reqSubmitBtn").addEventListener("click", async () => {
     } else {
       await addDoc(collection(db, type), {
         ...payload,
-        enteredBy: auth.currentUser.email,
+        enteredBy: currentUserLabel(),
         enteredAt: new Date().toISOString(),
         payrollDate: null,
         recordedAt: null,
@@ -932,11 +948,11 @@ function renderRequestRows(tbody, rows, showPayrollDate) {
     // column -- Applies-to-payroll under Date (pending PTO only) and
     // Entered-by under Note -- so the table stays narrow enough to fit
     // without a horizontal scrollbar.
-    let dateDisplay = (r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
-      ? `${r.date} – ${r.endDate}`
-      : (r.date || "");
+    let dateDisplay = `<span class="nowrap">${(r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
+      ? `${formatShortDate(r.date)}–${formatShortDate(r.endDate)}`
+      : formatShortDate(r.date)}</span>`;
     if (!showPayrollDate && r.type === "ptoRequests" && r.targetPayrollDate) {
-      dateDisplay += `<div class="small">payroll: ${formatPayDateLabel(r.targetPayrollDate)}</div>`;
+      dateDisplay += `<div class="small nowrap">payroll: ${formatShortDate(r.targetPayrollDate)}</div>`;
     }
     const noteDisplay = (r.note || "") + (r.enteredBy ? `<div class="small">— ${r.enteredBy}</div>` : "");
     tr.innerHTML = `
