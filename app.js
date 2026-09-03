@@ -949,39 +949,53 @@ async function loadPayrollRequests() {
   renderPtoCalendar();
 }
 
-// mode is "pending" (editable + voidable, no payroll-date column),
+// Each request renders as a small stacked card rather than a table row --
+// a table kept breaking here (an email address, "Employee Purchase", even
+// the word "void" would wrap one letter per line once real content showed
+// up, because six columns just don't fit this card's width at any split).
+// A card has no columns to divide up, so it can't do that regardless of
+// how long any one piece of text is.
+//
+// mode is "pending" (editable + voidable, shows PTO's target payroll date),
 // "history" (already processed -- read-only, shows which payroll date it
 // went out on), or "voided" (excluded from payroll -- read-only except for
 // the un-void link that brings it back to Pending).
-function renderRequestRows(tbody, rows, mode) {
-  tbody.innerHTML = "";
+function renderRequestRows(container, rows, mode) {
+  container.innerHTML = "";
+  if (!rows.length) {
+    container.innerHTML = `<div class="req-empty">Nothing here.</div>`;
+    return;
+  }
   rows.forEach((r) => {
-    const tr = document.createElement("tr");
+    const row = document.createElement("div");
+    row.className = "req-row";
+
     const amtDisplay = r.type === "ptoRequests"
-      ? (Number(r.amount) || 0).toFixed(2)
+      ? `${(Number(r.amount) || 0).toFixed(2)} hrs`
       : money(r.amount);
-    // Date and Note each carry a small muted sub-line instead of their own
-    // column -- Applies-to-payroll under Date (pending PTO only) and
-    // Entered-by (and, once voided, voided-by) under Note -- so the table
-    // stays narrow enough to fit without a horizontal scrollbar.
-    let dateDisplay = `<span class="nowrap">${(r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
+    const dateDisplay = (r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
       ? `${formatShortDate(r.date)}–${formatShortDate(r.endDate)}`
-      : formatShortDate(r.date)}</span>`;
+      : formatShortDate(r.date);
+    let metaLine = `${amtDisplay} · ${dateDisplay}`;
     if (mode === "pending" && r.type === "ptoRequests" && r.targetPayrollDate) {
-      dateDisplay += `<div class="small nowrap">payroll: ${formatShortDate(r.targetPayrollDate)}</div>`;
+      metaLine += ` · payroll: ${formatShortDate(r.targetPayrollDate)}`;
     }
-    let noteDisplay = (r.note || "") + (r.enteredBy ? `<div class="small">— ${r.enteredBy}</div>` : "");
-    if (mode === "voided" && r.voidedBy) {
-      noteDisplay += `<div class="small">voided by ${r.voidedBy}</div>`;
+    if (mode === "history") {
+      metaLine += ` · on payroll: ${formatShortDate(r.payrollDate)}`;
     }
-    tr.innerHTML = `
-      <td>${REQ_TYPE_DISPLAY[r.type]}</td>
-      <td>${r.employeeName}</td>
-      <td>${amtDisplay}</td>
-      <td>${dateDisplay}</td>
-      <td>${noteDisplay}</td>
-      ${mode === "history" ? `<td>${r.payrollDate || ""}</td>` : "<td></td>"}
+
+    row.innerHTML = `
+      <div class="req-row-top">
+        <span class="req-row-title">${REQ_TYPE_DISPLAY[r.type]} — ${r.employeeName}</span>
+        <span class="req-row-actions"></span>
+      </div>
+      <div class="req-row-meta">${metaLine}</div>
+      ${r.note ? `<div class="req-row-note">${r.note}</div>` : ""}
+      ${r.enteredBy ? `<div class="req-row-sub">entered by ${r.enteredBy}</div>` : ""}
+      ${mode === "voided" && r.voidedBy ? `<div class="req-row-sub">voided by ${r.voidedBy}</div>` : ""}
     `;
+
+    const actions = row.querySelector(".req-row-actions");
     if (mode === "pending") {
       // Only pending requests are editable/voidable -- once payrollDate is
       // stamped, firestore.rules blocks any further edit to the record
@@ -992,24 +1006,23 @@ function renderRequestRows(tbody, rows, mode) {
       editBtn.type = "button";
       editBtn.textContent = "edit";
       editBtn.addEventListener("click", () => startEditingRequest(r));
-      tr.lastElementChild.appendChild(editBtn);
+      actions.appendChild(editBtn);
 
       const voidBtn = document.createElement("button");
       voidBtn.className = "link";
       voidBtn.type = "button";
       voidBtn.textContent = "void";
-      voidBtn.style.marginLeft = "8px";
       voidBtn.addEventListener("click", () => voidRequest(r));
-      tr.lastElementChild.appendChild(voidBtn);
+      actions.appendChild(voidBtn);
     } else if (mode === "voided") {
       const unvoidBtn = document.createElement("button");
       unvoidBtn.className = "link";
       unvoidBtn.type = "button";
       unvoidBtn.textContent = "un-void";
       unvoidBtn.addEventListener("click", () => unvoidRequest(r));
-      tr.lastElementChild.appendChild(unvoidBtn);
+      actions.appendChild(unvoidBtn);
     }
-    tbody.appendChild(tr);
+    container.appendChild(row);
   });
 }
 

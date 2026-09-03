@@ -131,11 +131,33 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 13px; overflow-wrap: anywhere; }
   th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; }
   .nowrap { white-space: nowrap; }
-  /* Pending/History request tables specifically: fixed column widths sized
-     to fit within the card without a horizontal scrollbar, since these
-     have more columns crammed into the same width than the app's other
-     tables. */
-  table.requests-table { table-layout: fixed; }
+  /* Pending/History/Voided request lists: a plain table kept breaking --
+     too many columns (Type/Employee/Amount/Date/Note/Actions) for this
+     card's width, so long values (an email, "Employee Purchase", "void")
+     had nowhere to go and wrapped one letter per line. A stacked card per
+     request has no columns to fight over, so it renders correctly at any
+     width. */
+  .req-list { display: flex; flex-direction: column; gap: 8px; }
+  .req-row {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .req-row-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+  .req-row-title { font-weight: 600; font-size: 14px; }
+  .req-row-actions { white-space: nowrap; }
+  .req-row-actions button.link { margin-left: 12px; }
+  .req-row-actions button.link:first-child { margin-left: 0; }
+  .req-row-meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .req-row-note { font-size: 13px; margin-top: 6px; }
+  .req-row-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .req-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
   .net-pool {
     font-weight: bold;
     font-size: 16px;
@@ -402,43 +424,16 @@
       <div id="ptoCalendar" class="pto-calendar"></div>
 
       <h2 style="margin-top:24px;">Pending (not yet on a payroll run)</h2>
-      <div class="table-wrap">
-        <table class="requests-table">
-          <colgroup>
-            <col style="width:13%"><col style="width:15%"><col style="width:12%">
-            <col style="width:15%"><col style="width:37%"><col style="width:8%">
-          </colgroup>
-          <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th></th></tr></thead>
-          <tbody id="pendingRows"></tbody>
-        </table>
-      </div>
+      <div class="req-list" id="pendingRows"></div>
 
       <h2 style="margin-top:24px;">History (already on a payroll run)</h2>
-      <div class="table-wrap">
-        <table class="requests-table">
-          <colgroup>
-            <col style="width:13%"><col style="width:15%"><col style="width:12%">
-            <col style="width:15%"><col style="width:31%"><col style="width:14%">
-          </colgroup>
-          <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th>On payroll date</th></tr></thead>
-          <tbody id="historyRows"></tbody>
-        </table>
-      </div>
+      <div class="req-list" id="historyRows"></div>
 
       <h2 style="margin-top:24px;">Voided (excluded from payroll)</h2>
       <div class="small" style="margin-bottom:10px;">
         Nothing is ever deleted here -- voiding just keeps a mistaken entry out of the Payroll Report. Un-void brings it right back to Pending.
       </div>
-      <div class="table-wrap">
-        <table class="requests-table">
-          <colgroup>
-            <col style="width:13%"><col style="width:15%"><col style="width:12%">
-            <col style="width:15%"><col style="width:37%"><col style="width:8%">
-          </colgroup>
-          <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th></th></tr></thead>
-          <tbody id="voidedRows"></tbody>
-        </table>
-      </div>
+      <div class="req-list" id="voidedRows"></div>
     </div>
 
     <div class="card hidden" id="employeesCard">
