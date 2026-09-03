@@ -1170,6 +1170,12 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         # data. Persisting the combined number here instead would double-
         # count on every subsequent tip week.
         "w2ManDaysThisPeriod": w2_days_this_period,
+        # Structured (not just embedded in the warnings text) so the front
+        # end can offer a one-click "add as employee" / "add as sister-
+        # company alias" action per name, added 9/3/2026 per Rod -- these
+        # are exactly the names already excluded from this report, listed
+        # in the plain-text warning above.
+        "unknownTimeclockNames": unknown_names,
         "warnings": warnings,
     }
     return buf.read(), summary, warnings, consumed_ids

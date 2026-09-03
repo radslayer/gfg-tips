@@ -309,7 +309,7 @@ onAuthStateChanged(auth, async (user) => {
   const roleSnap = await getDoc(doc(db, "roles", user.uid));
   currentRole = roleSnap.exists() ? roleSnap.data().role : null;
   const roleLabel = ROLE_LABELS[currentRole] || "no role assigned";
-  $("whoamiText").textContent = `${user.email} (${roleLabel})`;
+  $("whoamiText").textContent = `${user.displayName || user.email} (${roleLabel})`;
 
   renderTabsForRole(currentRole);
 
@@ -725,6 +725,18 @@ function renderUserRoleRows(users) {
   users.forEach((u) => {
     const tr = document.createElement("tr");
 
+    // Existing accounts created directly in the Firebase Console have no
+    // display name on file, so this starts blank rather than guessing one
+    // from the email -- Rod types the real name once and Save writes it.
+    const nameTd = document.createElement("td");
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = u.displayName || "";
+    nameInput.placeholder = "(no name on file)";
+    nameInput.style.width = "100%";
+    nameTd.appendChild(nameInput);
+    tr.appendChild(nameTd);
+
     const emailTd = document.createElement("td");
     emailTd.textContent = u.email;
     tr.appendChild(emailTd);
@@ -760,8 +772,9 @@ function renderUserRoleRows(users) {
       saveBtn.disabled = true;
       try {
         const call = httpsCallable(functions, "set_user_role");
-        await call({ uid: u.uid, role: newRole });
-        setMsg($("userRoleMsg"), `${u.email} is now ${ROLE_LABELS[newRole]}.`, "ok");
+        const newName = nameInput.value.trim();
+        await call({ uid: u.uid, role: newRole, displayName: newName });
+        setMsg($("userRoleMsg"), `${newName || u.email} is now ${ROLE_LABELS[newRole]}.`, "ok");
         loadUserRoles();
       } catch (err) {
         setMsg($("userRoleMsg"), "Failed: " + err.message, "error");
@@ -1463,6 +1476,74 @@ $("generateReportBtn").addEventListener("click", async () => {
   }
 });
 
+// Quick-action follow-up for the "these names appear in the timeclock
+// export but have no wage rate on file" warning (added 9/3/2026, per Rod).
+// The system genuinely can't tell whether an unrecognized name is a new
+// hire or someone punching in under a sister-company alias -- that's
+// always a judgment call -- so this doesn't guess; it just jumps straight
+// to the right pre-filled form either way, instead of making Rod retype
+// the name after hunting through the Employees tab himself.
+function renderUnknownTimeclockNames(names) {
+  const container = $("reportUnknownNames");
+  container.innerHTML = "";
+  if (!names.length) {
+    hide(container);
+    return;
+  }
+  names.forEach((name) => {
+    const row = document.createElement("div");
+    row.className = "req-row";
+
+    const top = document.createElement("div");
+    top.className = "req-row-top";
+
+    const title = document.createElement("span");
+    title.className = "req-row-title";
+    title.textContent = name;
+    top.appendChild(title);
+
+    const actions = document.createElement("span");
+    actions.className = "req-row-actions";
+
+    const addEmpBtn = document.createElement("button");
+    addEmpBtn.type = "button";
+    addEmpBtn.textContent = "Add as employee";
+    addEmpBtn.addEventListener("click", () => {
+      showSection("employeesCard");
+      $("empName").value = name;
+      $("empDept").value = "";
+      $("empRate").value = "";
+      $("empTipEligible").value = "y";
+      $("empName").scrollIntoView({ behavior: "smooth", block: "center" });
+      $("empDept").focus();
+    });
+    actions.appendChild(addEmpBtn);
+
+    const addAliasBtn = document.createElement("button");
+    addAliasBtn.type = "button";
+    addAliasBtn.textContent = "Add as sister-company alias";
+    addAliasBtn.addEventListener("click", () => {
+      showSection("employeesCard");
+      populateAliasEmployeeDropdown();
+      $("aliasName").value = name;
+      $("aliasName").scrollIntoView({ behavior: "smooth", block: "center" });
+      $("aliasCanonical").focus();
+    });
+    actions.appendChild(addAliasBtn);
+
+    top.appendChild(actions);
+    row.appendChild(top);
+
+    const sub = document.createElement("div");
+    sub.className = "req-row-sub";
+    sub.textContent = "Excluded from this report until you pick one.";
+    row.appendChild(sub);
+
+    container.appendChild(row);
+  });
+  show(container);
+}
+
 function renderReport(data) {
   const { summary, warnings, reportBase64, reportFilename } = data;
   lastReportBase64 = reportBase64;
@@ -1476,6 +1557,7 @@ function renderReport(data) {
     warnEl.textContent = "";
     hide(warnEl);
   }
+  renderUnknownTimeclockNames(summary.unknownTimeclockNames || []);
 
   const empRows = $("reportEmployeeRows");
   empRows.innerHTML = "";
