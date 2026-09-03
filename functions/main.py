@@ -177,10 +177,15 @@ def list_users_with_roles(req: https_fn.CallableRequest):
             users.append({
                 "uid": user.uid,
                 "email": user.email or "(no email on file)",
+                "displayName": user.display_name or "",
                 "role": role_by_uid.get(user.uid) or "none",
             })
         page = page.get_next_page()
-    users.sort(key=lambda u: u["email"].lower())
+    # Name-first sort (falling back to email for the handful of accounts
+    # created directly in the Firebase Console, which have no display name
+    # on file yet -- see set_user_role, which is how the Admin tab lets
+    # Rod fill one in without touching the console).
+    users.sort(key=lambda u: (u["displayName"] or u["email"]).lower())
     return {"users": users}
 
 
@@ -201,13 +206,21 @@ def set_user_role(req: https_fn.CallableRequest):
     Refuses to move the CALLER's own account off admin if they're the only
     admin on file -- that would lock everyone out of every Owner tool
     (including this one) with no way back in except by hand in the
-    Firebase console."""
+    Firebase console.
+
+    Also takes an optional `displayName` (added 9/3/2026, per Rod: everyone
+    should be referenced by name rather than a clunky email address) --
+    when given a non-empty value, sets it on the Auth account too, in the
+    same call. Existing accounts created directly in the Firebase Console
+    have no display name on file at all, so this is how the Admin tab lets
+    Rod fill one in without ever touching the console."""
     db = firestore.client()
     _require_role(req, db, {"admin"})
 
     data = req.data or {}
     target_uid = (data.get("uid") or "").strip()
     new_role = (data.get("role") or "").strip()
+    display_name = (data.get("displayName") or "").strip()
 
     if new_role not in ("admin", "manager", "entry"):
         raise https_fn.HttpsError(
@@ -233,6 +246,8 @@ def set_user_role(req: https_fn.CallableRequest):
 
     db.collection("roles").document(target_uid).set({"role": new_role})
     fb_auth.set_custom_user_claims(target_uid, {"role": new_role})
+    if display_name:
+        fb_auth.update_user(target_uid, display_name=display_name)
 
     return {"ok": True}
 
