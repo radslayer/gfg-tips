@@ -424,6 +424,21 @@
           <tbody id="historyRows"></tbody>
         </table>
       </div>
+
+      <h2 style="margin-top:24px;">Voided (excluded from payroll)</h2>
+      <div class="small" style="margin-bottom:10px;">
+        Nothing is ever deleted here -- voiding just keeps a mistaken entry out of the Payroll Report. Un-void brings it right back to Pending.
+      </div>
+      <div class="table-wrap">
+        <table class="requests-table">
+          <colgroup>
+            <col style="width:13%"><col style="width:15%"><col style="width:12%">
+            <col style="width:15%"><col style="width:37%"><col style="width:8%">
+          </colgroup>
+          <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th></th></tr></thead>
+          <tbody id="voidedRows"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card hidden" id="employeesCard">

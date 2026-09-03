@@ -155,11 +155,11 @@ def list_employee_names(req: https_fn.CallableRequest):
 @https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_512, timeout_sec=120)
 def generate_payroll_report(req: https_fn.CallableRequest):
     """Owner-only. Builds the payroll report from the uploaded raw
-    timeclock CSV plus every currently-pending (payrollDate == null)
-    request in the four payroll-request collections -- except PTO, which
-    only counts if its targetPayrollDate matches this run's pay_period_id
-    (see the filtering below); the other three types always sweep in
-    regardless of pay period. When `finalize` is true, stamps payrollDate +
+    timeclock CSV plus every currently-pending (payrollDate == null),
+    non-voided request in the four payroll-request collections -- except
+    PTO, which additionally only counts if its targetPayrollDate matches
+    this run's pay_period_id (see the filtering below); the other three
+    types always sweep in regardless of pay period. When `finalize` is true, stamps payrollDate +
     recordedAt/recordedBy on every request it used, so it's never picked up
     again -- this IS the official record of "this request was included in
     payroll on this date," replacing the old Excel tracker's 'Recorded in
@@ -225,6 +225,11 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     for coll_name in _REQUEST_COLLECTIONS:
         docs = db.collection(coll_name).where("payrollDate", "==", None).stream()
         docs_data = [{"id": d.id, **d.to_dict()} for d in docs]
+        # A voided request (voidedAt/voidedBy, set from the Payroll Requests
+        # tab) is a mistake that was caught before it was ever paid out --
+        # it's kept forever for the record, same as everything else, but
+        # must never be swept into an actual payroll run.
+        docs_data = [d for d in docs_data if not d.get("voidedAt")]
         if coll_name == "ptoRequests":
             # Employee Purchases, Delivery/Misc, and Reimbursements always
             # sweep into whichever payroll run happens next -- that's the

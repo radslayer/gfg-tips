@@ -884,12 +884,14 @@ function stopEditingRequest() {
 $("reqCancelEditBtn").addEventListener("click", stopEditingRequest);
 
 // Fetches every request document (not just pending ones) and splits them
-// client-side into "pending" (payrollDate still null) and "history"
-// (already swept into a payroll run) -- Managers/Owner can now see both,
-// so an already-processed request never just disappears from view.
+// client-side into "pending" (payrollDate still null, not voided),
+// "history" (already swept into a payroll run), and "voided" (excluded from
+// payroll but never deleted) -- Managers/Owner can see all three, so a
+// request never just disappears from view.
 async function loadPayrollRequests() {
   const pendingRows = [];
   const historyRows = [];
+  const voidedRows = [];
   ptoEntriesCache = [];
   for (const type of Object.keys(REQ_LABELS)) {
     const info = REQ_LABELS[type];
@@ -917,9 +919,17 @@ async function loadPayrollRequests() {
         targetPayrollDate: data.targetPayrollDate || null,
         enteredBy: data.enteredBy,
         payrollDate: data.payrollDate || null,
+        voidedAt: data.voidedAt || null,
+        voidedBy: data.voidedBy || null,
       };
-      (row.payrollDate ? historyRows : pendingRows).push(row);
-      if (type === "ptoRequests" && row.date) {
+      if (row.voidedAt) {
+        voidedRows.push(row);
+      } else {
+        (row.payrollDate ? historyRows : pendingRows).push(row);
+      }
+      // A voided PTO request never actually happens, so it doesn't belong
+      // on the calendar.
+      if (type === "ptoRequests" && row.date && !row.voidedAt) {
         ptoEntriesCache.push({
           employeeName: row.employeeName,
           startDate: row.date,
@@ -928,16 +938,22 @@ async function loadPayrollRequests() {
       }
     });
   }
-  // Newest first, both lists -- so the latest entries stay at the top.
+  // Newest first, every list -- so the latest entries stay at the top.
   pendingRows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   historyRows.sort((a, b) => (a.payrollDate < b.payrollDate ? 1 : a.payrollDate > b.payrollDate ? -1 : 0));
+  voidedRows.sort((a, b) => (a.voidedAt < b.voidedAt ? 1 : a.voidedAt > b.voidedAt ? -1 : 0));
 
-  renderRequestRows($("pendingRows"), pendingRows, false);
-  renderRequestRows($("historyRows"), historyRows, true);
+  renderRequestRows($("pendingRows"), pendingRows, "pending");
+  renderRequestRows($("historyRows"), historyRows, "history");
+  renderRequestRows($("voidedRows"), voidedRows, "voided");
   renderPtoCalendar();
 }
 
-function renderRequestRows(tbody, rows, showPayrollDate) {
+// mode is "pending" (editable + voidable, no payroll-date column),
+// "history" (already processed -- read-only, shows which payroll date it
+// went out on), or "voided" (excluded from payroll -- read-only except for
+// the un-void link that brings it back to Pending).
+function renderRequestRows(tbody, rows, mode) {
   tbody.innerHTML = "";
   rows.forEach((r) => {
     const tr = document.createElement("tr");
@@ -946,36 +962,84 @@ function renderRequestRows(tbody, rows, showPayrollDate) {
       : money(r.amount);
     // Date and Note each carry a small muted sub-line instead of their own
     // column -- Applies-to-payroll under Date (pending PTO only) and
-    // Entered-by under Note -- so the table stays narrow enough to fit
-    // without a horizontal scrollbar.
+    // Entered-by (and, once voided, voided-by) under Note -- so the table
+    // stays narrow enough to fit without a horizontal scrollbar.
     let dateDisplay = `<span class="nowrap">${(r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
       ? `${formatShortDate(r.date)}–${formatShortDate(r.endDate)}`
       : formatShortDate(r.date)}</span>`;
-    if (!showPayrollDate && r.type === "ptoRequests" && r.targetPayrollDate) {
+    if (mode === "pending" && r.type === "ptoRequests" && r.targetPayrollDate) {
       dateDisplay += `<div class="small nowrap">payroll: ${formatShortDate(r.targetPayrollDate)}</div>`;
     }
-    const noteDisplay = (r.note || "") + (r.enteredBy ? `<div class="small">— ${r.enteredBy}</div>` : "");
+    let noteDisplay = (r.note || "") + (r.enteredBy ? `<div class="small">— ${r.enteredBy}</div>` : "");
+    if (mode === "voided" && r.voidedBy) {
+      noteDisplay += `<div class="small">voided by ${r.voidedBy}</div>`;
+    }
     tr.innerHTML = `
       <td>${REQ_TYPE_DISPLAY[r.type]}</td>
       <td>${r.employeeName}</td>
       <td>${amtDisplay}</td>
       <td>${dateDisplay}</td>
       <td>${noteDisplay}</td>
-      ${showPayrollDate ? `<td>${r.payrollDate || ""}</td>` : "<td></td>"}
+      ${mode === "history" ? `<td>${r.payrollDate || ""}</td>` : "<td></td>"}
     `;
-    if (!showPayrollDate) {
-      // Only pending requests are editable -- once payrollDate is stamped,
-      // firestore.rules blocks any further edit to the record (it's the
-      // permanent record of what actually went into that payroll run).
+    if (mode === "pending") {
+      // Only pending requests are editable/voidable -- once payrollDate is
+      // stamped, firestore.rules blocks any further edit to the record
+      // (it's the permanent record of what actually went into that
+      // payroll run).
       const editBtn = document.createElement("button");
       editBtn.className = "link";
       editBtn.type = "button";
       editBtn.textContent = "edit";
       editBtn.addEventListener("click", () => startEditingRequest(r));
       tr.lastElementChild.appendChild(editBtn);
+
+      const voidBtn = document.createElement("button");
+      voidBtn.className = "link";
+      voidBtn.type = "button";
+      voidBtn.textContent = "void";
+      voidBtn.style.marginLeft = "8px";
+      voidBtn.addEventListener("click", () => voidRequest(r));
+      tr.lastElementChild.appendChild(voidBtn);
+    } else if (mode === "voided") {
+      const unvoidBtn = document.createElement("button");
+      unvoidBtn.className = "link";
+      unvoidBtn.type = "button";
+      unvoidBtn.textContent = "un-void";
+      unvoidBtn.addEventListener("click", () => unvoidRequest(r));
+      tr.lastElementChild.appendChild(unvoidBtn);
     }
     tbody.appendChild(tr);
   });
+}
+
+// Voiding never deletes anything -- payroll requests are a permanent record
+// (see firestore.rules) -- it just marks the record so generate_payroll_report
+// skips it, and moves it out of Pending into its own Voided list. Un-void
+// clears those fields and it's back in Pending exactly as it was.
+async function voidRequest(row) {
+  if (editingRequestId === row.id) stopEditingRequest();
+  try {
+    await updateDoc(doc(db, row.type, row.id), {
+      voidedAt: new Date().toISOString(),
+      voidedBy: currentUserLabel(),
+    });
+    loadPayrollRequests();
+  } catch (err) {
+    setMsg($("reqMsg"), "Couldn't void it: " + err.message, "error");
+  }
+}
+
+async function unvoidRequest(row) {
+  try {
+    await updateDoc(doc(db, row.type, row.id), {
+      voidedAt: null,
+      voidedBy: null,
+    });
+    loadPayrollRequests();
+  } catch (err) {
+    setMsg($("reqMsg"), "Couldn't un-void it: " + err.message, "error");
+  }
 }
 
 // ---------- PTO calendar (month view, above the Pending/History tables) ----------
