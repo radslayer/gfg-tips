@@ -632,12 +632,41 @@ function updateReqDateFields() {
   $("reqPtoRangeHint").classList.toggle("hidden", !isPto);
   if (isPto && !$("reqEndDate").value) $("reqEndDate").value = $("reqDate").value;
 }
+// Employee Purchase is the one request type where we don't take a free-text
+// Note -- instead we capture what was bought, the current vendor cost per
+// unit, and how many units, and Amount is always the product of those two
+// (never hand-typed) so it can't drift from what was actually entered.
+// Every other request type keeps a plain, required Note field, same as
+// before.
+function updateReqPurchaseFields() {
+  const isPurchase = $("reqType").value === "employeePurchases";
+  $("reqPurchaseFields").classList.toggle("hidden", !isPurchase);
+  $("reqNoteField").classList.toggle("hidden", isPurchase);
+  $("reqProduct").required = isPurchase;
+  $("reqCostPerUnit").required = isPurchase;
+  $("reqUnits").required = isPurchase;
+  $("reqNote").required = !isPurchase;
+  $("reqAmount").readOnly = isPurchase;
+  $("reqAmount").classList.toggle("locked", isPurchase);
+  $("reqAmountLabel").textContent = REQ_LABELS[$("reqType").value].label + (isPurchase ? " (calculated)" : "");
+  if (isPurchase) recomputePurchaseAmount();
+}
+function recomputePurchaseAmount() {
+  const cost = Number($("reqCostPerUnit").value) || 0;
+  const units = Number($("reqUnits").value) || 0;
+  $("reqAmount").value = (cost * units).toFixed(2);
+}
+["reqCostPerUnit", "reqUnits"].forEach((id) =>
+  $(id).addEventListener("input", recomputePurchaseAmount)
+);
 $("reqType").addEventListener("change", () => {
   updateReqAmountLabel();
   updateReqDateFields();
+  updateReqPurchaseFields();
 });
 updateReqAmountLabel();
 updateReqDateFields();
+updateReqPurchaseFields();
 
 // Default the date picker(s) to today, as a convenience.
 $("reqDate").value = new Date().toISOString().slice(0, 10);
@@ -653,14 +682,36 @@ $("reqSubmitBtn").addEventListener("click", async () => {
   const type = $("reqType").value;
   const info = REQ_LABELS[type];
   const isPto = type === "ptoRequests";
+  const isPurchase = type === "employeePurchases";
   const employeeName = $("reqEmployee").value;
-  const amount = Number($("reqAmount").value);
   const date = $("reqDate").value;
   const endDate = isPto ? $("reqEndDate").value : date;
   const note = $("reqNote").value.trim();
 
+  const product = $("reqProduct").value.trim();
+  const costPerUnit = Number($("reqCostPerUnit").value);
+  const units = Number($("reqUnits").value);
+  const amount = isPurchase ? Math.round(costPerUnit * units * 100) / 100 : Number($("reqAmount").value);
+
   if (!employeeName) {
     setMsg($("reqMsg"), "Choose an employee -- if the list is empty, ask Rod to add employees first.", "error");
+    return;
+  }
+  if (isPurchase) {
+    if (!product) {
+      setMsg($("reqMsg"), "Enter what was purchased.", "error");
+      return;
+    }
+    if (!costPerUnit || costPerUnit <= 0) {
+      setMsg($("reqMsg"), "Enter the vendor cost per unit.", "error");
+      return;
+    }
+    if (!units || units <= 0) {
+      setMsg($("reqMsg"), "Enter how many units were purchased.", "error");
+      return;
+    }
+  } else if (!note) {
+    setMsg($("reqMsg"), "Enter a note.", "error");
     return;
   }
   if (!amount || amount <= 0) {
@@ -683,7 +734,12 @@ $("reqSubmitBtn").addEventListener("click", async () => {
       [info.amountField]: amount,
       date,
       endDate,
-      note: note || null,
+      note: isPurchase ? null : note,
+      ...(isPurchase ? {
+        productPurchased: product,
+        costPerUnit,
+        unitsPurchased: units,
+      } : {}),
       enteredBy: auth.currentUser.email,
       enteredAt: new Date().toISOString(),
       payrollDate: null,
@@ -693,6 +749,9 @@ $("reqSubmitBtn").addEventListener("click", async () => {
     setMsg($("reqMsg"), "Logged.", "ok");
     $("reqAmount").value = "";
     $("reqNote").value = "";
+    $("reqProduct").value = "";
+    $("reqCostPerUnit").value = "";
+    $("reqUnits").value = "";
     loadPayrollRequests();
   } catch (err) {
     setMsg($("reqMsg"), "Couldn't log it: " + err.message, "error");
@@ -714,13 +773,20 @@ async function loadPayrollRequests() {
     const snap = await getDocs(collection(db, type));
     snap.forEach((d) => {
       const data = d.data();
+      // Employee Purchase rows show the product/cost/units breakdown in the
+      // Note column instead of a free-text note (that field no longer
+      // exists for this type) -- older purchase records logged before this
+      // change only have a plain note, so those still display as-is.
+      const note = (type === "employeePurchases" && data.productPurchased)
+        ? `${data.productPurchased} — ${data.unitsPurchased ?? "?"} @ ${money(data.costPerUnit)}/unit`
+        : data.note;
       const row = {
         type,
         employeeName: data.employeeName,
         amount: data[info.amountField],
         date: data.date,
         endDate: data.endDate || data.date,
-        note: data.note,
+        note,
         enteredBy: data.enteredBy,
         payrollDate: data.payrollDate || null,
       };
