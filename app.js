@@ -103,8 +103,16 @@ let currentPeriodStatus = null;
 let periodDefaultChosen = false;
 let lastReportBase64 = null;
 let lastReportFilename = null;
-let employeesCache = [];  // [{id, name, department, rate, tipEligible}, ...]
+let employeesCache = [];  // admin: [{id, name, department, rate, tipEligible}, ...]
+                           // manager: [{id, name}, ...] only -- no wage data
 let aliasesCache = [];    // [{id, aliasName, canonicalEmployee, entityLabel}, ...]
+let ptoEntriesCache = []; // [{employeeName, startDate, endDate}, ...] for the calendar, refreshed
+                           // by loadPayrollRequests -- every PTO request currently on file
+                           // (pending or already on a payroll run), since this app has no
+                           // separate "approved" flag: a Manager/Owner logging one IS the approval.
+const today = new Date();
+let ptoCalYear = today.getFullYear();
+let ptoCalMonth = today.getMonth(); // 0-11
 
 // ---------- DOM helpers ----------
 const $ = (id) => document.getElementById(id);
@@ -418,14 +426,28 @@ async function loadPeriodsHistory() {
 }
 
 // ---------- Employees (roster) ----------
+// Admin gets the full roster (name, department, wage rate, tip-eligible)
+// straight from Firestore -- reads of `employees` are admin-only in
+// firestore.rules. A Manager instead gets only {id, name} from the
+// list_employee_names Cloud Function, just enough to populate the "pick
+// an employee" dropdown when logging a request on someone's behalf --
+// their browser never receives anyone's wage rate (per Rod, 9/2/2026: a
+// Manager shouldn't be able to see another employee's pay, front office
+// included, even a manager they happen to outrank).
 async function loadEmployees() {
-  const q = query(collection(db, "employees"), orderBy("name"));
-  const snap = await getDocs(q);
-  employeesCache = [];
-  snap.forEach((d) => employeesCache.push({ id: d.id, ...d.data() }));
+  if (currentRole === "admin") {
+    const q = query(collection(db, "employees"), orderBy("name"));
+    const snap = await getDocs(q);
+    employeesCache = [];
+    snap.forEach((d) => employeesCache.push({ id: d.id, ...d.data() }));
+    renderEmployeeRows();
+    if ($("aliasCanonical")) populateAliasEmployeeDropdown();
+  } else {
+    const call = httpsCallable(functions, "list_employee_names");
+    const result = await call();
+    employeesCache = result.data.employees || [];
+  }
   populateEmployeeDropdown();
-  renderEmployeeRows();
-  if ($("aliasCanonical")) populateAliasEmployeeDropdown();
 }
 
 function populateEmployeeDropdown() {
@@ -599,19 +621,42 @@ function updateReqAmountLabel() {
   const info = REQ_LABELS[$("reqType").value];
   $("reqAmountLabel").textContent = info.label;
 }
-$("reqType").addEventListener("change", updateReqAmountLabel);
+// PTO can span multiple days (a week off, etc.) -- every other request type
+// stays a single date, exactly as before. Total hours for a PTO stretch is
+// still just typed in by whoever logs it (same as always); we're only
+// additionally recording which actual calendar days it covers.
+function updateReqDateFields() {
+  const isPto = $("reqType").value === "ptoRequests";
+  $("reqDateLabel").textContent = isPto ? "Start date" : "Date";
+  $("reqEndDateField").classList.toggle("hidden", !isPto);
+  $("reqPtoRangeHint").classList.toggle("hidden", !isPto);
+  if (isPto && !$("reqEndDate").value) $("reqEndDate").value = $("reqDate").value;
+}
+$("reqType").addEventListener("change", () => {
+  updateReqAmountLabel();
+  updateReqDateFields();
+});
 updateReqAmountLabel();
+updateReqDateFields();
 
-// Default the date picker to today, as a convenience.
+// Default the date picker(s) to today, as a convenience.
 $("reqDate").value = new Date().toISOString().slice(0, 10);
+$("reqEndDate").value = $("reqDate").value;
+$("reqDate").addEventListener("change", () => {
+  // Keep the end date from trailing before the start date if someone
+  // changes the start after already picking an end.
+  if ($("reqEndDate").value < $("reqDate").value) $("reqEndDate").value = $("reqDate").value;
+});
 
 $("reqSubmitBtn").addEventListener("click", async () => {
   setMsg($("reqMsg"), "", "");
   const type = $("reqType").value;
   const info = REQ_LABELS[type];
+  const isPto = type === "ptoRequests";
   const employeeName = $("reqEmployee").value;
   const amount = Number($("reqAmount").value);
   const date = $("reqDate").value;
+  const endDate = isPto ? $("reqEndDate").value : date;
   const note = $("reqNote").value.trim();
 
   if (!employeeName) {
@@ -622,8 +667,12 @@ $("reqSubmitBtn").addEventListener("click", async () => {
     setMsg($("reqMsg"), `Enter a positive ${info.label.toLowerCase()}.`, "error");
     return;
   }
-  if (!date) {
-    setMsg($("reqMsg"), "Pick a date.", "error");
+  if (!date || (isPto && !endDate)) {
+    setMsg($("reqMsg"), isPto ? "Pick a start and end date." : "Pick a date.", "error");
+    return;
+  }
+  if (isPto && endDate < date) {
+    setMsg($("reqMsg"), "End date can't be before the start date.", "error");
     return;
   }
 
@@ -633,6 +682,7 @@ $("reqSubmitBtn").addEventListener("click", async () => {
       employeeName,
       [info.amountField]: amount,
       date,
+      endDate,
       note: note || null,
       enteredBy: auth.currentUser.email,
       enteredAt: new Date().toISOString(),
@@ -658,6 +708,7 @@ $("reqSubmitBtn").addEventListener("click", async () => {
 async function loadPayrollRequests() {
   const pendingRows = [];
   const historyRows = [];
+  ptoEntriesCache = [];
   for (const type of Object.keys(REQ_LABELS)) {
     const info = REQ_LABELS[type];
     const snap = await getDocs(collection(db, type));
@@ -668,18 +719,28 @@ async function loadPayrollRequests() {
         employeeName: data.employeeName,
         amount: data[info.amountField],
         date: data.date,
+        endDate: data.endDate || data.date,
         note: data.note,
         enteredBy: data.enteredBy,
         payrollDate: data.payrollDate || null,
       };
       (row.payrollDate ? historyRows : pendingRows).push(row);
+      if (type === "ptoRequests" && row.date) {
+        ptoEntriesCache.push({
+          employeeName: row.employeeName,
+          startDate: row.date,
+          endDate: row.endDate || row.date,
+        });
+      }
     });
   }
+  // Newest first, both lists -- so the latest entries stay at the top.
   pendingRows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   historyRows.sort((a, b) => (a.payrollDate < b.payrollDate ? 1 : a.payrollDate > b.payrollDate ? -1 : 0));
 
   renderRequestRows($("pendingRows"), pendingRows, false);
   renderRequestRows($("historyRows"), historyRows, true);
+  renderPtoCalendar();
 }
 
 function renderRequestRows(tbody, rows, showPayrollDate) {
@@ -689,11 +750,14 @@ function renderRequestRows(tbody, rows, showPayrollDate) {
     const amtDisplay = r.type === "ptoRequests"
       ? (Number(r.amount) || 0).toFixed(2)
       : money(r.amount);
+    const dateDisplay = (r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
+      ? `${r.date} – ${r.endDate}`
+      : (r.date || "");
     tr.innerHTML = `
       <td>${REQ_TYPE_DISPLAY[r.type]}</td>
       <td>${r.employeeName}</td>
       <td>${amtDisplay}</td>
-      <td>${r.date || ""}</td>
+      <td>${dateDisplay}</td>
       <td>${r.note || ""}</td>
       <td>${r.enteredBy || ""}</td>
       ${showPayrollDate ? `<td>${r.payrollDate || ""}</td>` : ""}
@@ -701,6 +765,69 @@ function renderRequestRows(tbody, rows, showPayrollDate) {
     tbody.appendChild(tr);
   });
 }
+
+// ---------- PTO calendar (month view, above the Pending/History tables) ----------
+// Pure display -- reads whatever loadPayrollRequests last populated into
+// ptoEntriesCache, so switching months never needs another Firestore read.
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function renderPtoCalendar() {
+  const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"];
+  $("ptoCalLabel").textContent = `${MONTH_NAMES[ptoCalMonth]} ${ptoCalYear}`;
+
+  const firstOfMonth = new Date(ptoCalYear, ptoCalMonth, 1);
+  const daysInMonth = new Date(ptoCalYear, ptoCalMonth + 1, 0).getDate();
+  const startWeekday = firstOfMonth.getDay(); // 0=Sun
+
+  const grid = $("ptoCalendar");
+  grid.innerHTML = "";
+  ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach((dow) => {
+    const el = document.createElement("div");
+    el.className = "pto-cal-dow";
+    el.textContent = dow;
+    grid.appendChild(el);
+  });
+
+  for (let i = 0; i < startWeekday; i++) {
+    const el = document.createElement("div");
+    el.className = "pto-cal-day pto-cal-empty";
+    grid.appendChild(el);
+  }
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${ptoCalYear}-${pad2(ptoCalMonth + 1)}-${pad2(day)}`;
+    const cell = document.createElement("div");
+    cell.className = "pto-cal-day";
+    const num = document.createElement("div");
+    num.className = "pto-cal-daynum";
+    num.textContent = String(day);
+    cell.appendChild(num);
+
+    ptoEntriesCache
+      .filter((e) => e.startDate <= dateStr && dateStr <= e.endDate)
+      .forEach((e) => {
+        const chip = document.createElement("div");
+        chip.className = "pto-cal-entry";
+        chip.textContent = e.employeeName;
+        chip.title = `${e.employeeName}: ${e.startDate} – ${e.endDate}`;
+        cell.appendChild(chip);
+      });
+
+    grid.appendChild(cell);
+  }
+}
+
+$("ptoCalPrevBtn").addEventListener("click", () => {
+  ptoCalMonth -= 1;
+  if (ptoCalMonth < 0) { ptoCalMonth = 11; ptoCalYear -= 1; }
+  renderPtoCalendar();
+});
+$("ptoCalNextBtn").addEventListener("click", () => {
+  ptoCalMonth += 1;
+  if (ptoCalMonth > 11) { ptoCalMonth = 0; ptoCalYear += 1; }
+  renderPtoCalendar();
+});
 
 // ---------- Owner: Payroll Report ----------
 function readFileAsBase64(file) {

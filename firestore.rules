@@ -11,10 +11,13 @@ rules_version = '2';
 //           payroll requests, the employee roster, and Payroll Report
 //           generation.
 //   manager ("Manager" -- Mike, Thao) -- can log PTO/purchase/misc/
-//           reimbursement requests, can read the employee roster (to pick
-//           names from), and can use the tips form as backup for Larry
-//           (same submit-lock as entry: once a period is submitted, only
-//           an admin can go back and correct it).
+//           reimbursement requests, can see every employee's NAME (to
+//           pick one when logging a request), but never a wage rate --
+//           that only ever reaches the Owner's browser, via the roster
+//           screen below (see list_employee_names in main.py for how
+//           Managers get names without rates), and can use the tips form
+//           as backup for Larry (same submit-lock as entry: once a period
+//           is submitted, only an admin can go back and correct it).
 //   entry   ("Entry" -- Larry) -- tips form only.
 //
 // Nobody can read another user's `roles` doc except themselves and admins
@@ -108,8 +111,16 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Reads are admin-only (per Rod, 9/2/2026: a Manager should never be
+    // able to see anyone's hourly rate -- that only belongs on the Owner's
+    // worksheet, i.e. this tab). Managers still see every employee's NAME
+    // when logging a request on someone's behalf, but that comes from the
+    // list_employee_names Cloud Function (Admin SDK, bypasses this rule),
+    // which returns name only -- never rate, department, or tipEligible --
+    // so a Manager's browser never receives a wage at all, not just an
+    // un-displayed one.
     match /employees/{employeeId} {
-      allow read: if isAdmin() || isManager();
+      allow read: if isAdmin();
       allow write: if isAdmin();
     }
 

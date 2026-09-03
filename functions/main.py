@@ -7,7 +7,10 @@ Three roles, stored in `roles/{uid}` same as before:
   admin   ("Owner" in the UI -- Rod) -- everything.
   manager ("Manager" in the UI -- Mike, Thao) -- can log PTO/purchases/
           misc amount/misc reimbursement requests, and can also use the
-          tips-input form as backup for Larry.
+          tips-input form as backup for Larry. Can see every employee's
+          NAME (list_employee_names, below) but never a wage rate -- rates
+          only ever go out via generate_payroll_report and the roster read
+          the Employees tab uses, both admin-only.
   entry   ("Entry" -- Larry) -- tips-input form only. No access to
           payroll requests, the employee roster, or report generation.
 
@@ -125,6 +128,28 @@ def seed_employees(req: https_fn.CallableRequest):
         count += 1
     batch.commit()
     return {"seeded": count}
+
+
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=30)
+def list_employee_names(req: https_fn.CallableRequest):
+    """Admin or Manager. Returns ONLY {id, name} for every employee --
+    never rate, department, or tipEligible. This is what powers the "pick
+    an employee" dropdown a Manager sees when logging a PTO/Purchase/Misc/
+    Reimbursement request on someone's behalf; per Rod (9/2/2026), a
+    Manager must never be able to see another employee's wage, so their
+    browser is never sent the full record at all -- not hidden by the
+    UI, actually never transmitted. (Admin still gets the full roster,
+    rate included, via the direct Firestore read the Employees tab uses --
+    see firestore.rules, which now restricts that read to admin only.)"""
+    db = firestore.client()
+    _require_role(req, db, {"admin", "manager"})
+
+    names = []
+    for doc in db.collection("employees").order_by("name").stream():
+        name = (doc.to_dict() or {}).get("name")
+        if name:
+            names.append({"id": doc.id, "name": name})
+    return {"employees": names}
 
 
 @https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_512, timeout_sec=120)

@@ -171,6 +171,44 @@
     border-bottom-color: var(--accent);
     font-weight: bold;
   }
+  .pto-calendar {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+    margin: 10px 0 4px;
+  }
+  .pto-calendar .pto-cal-dow {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    text-align: center;
+    padding: 2px 0;
+  }
+  .pto-calendar .pto-cal-day {
+    min-height: 64px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px;
+    background: var(--bg);
+  }
+  .pto-calendar .pto-cal-day.pto-cal-empty {
+    background: transparent;
+    border-color: transparent;
+  }
+  .pto-calendar .pto-cal-daynum {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .pto-calendar .pto-cal-entry {
+    font-size: 11px;
+    background: var(--yellow);
+    border-radius: 3px;
+    padding: 1px 4px;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -303,9 +341,16 @@
           <input type="number" step="0.01" id="reqAmount" />
         </div>
         <div class="field">
-          <label for="reqDate">Date</label>
+          <label for="reqDate" id="reqDateLabel">Date</label>
           <input type="date" id="reqDate" />
         </div>
+        <div class="field hidden" id="reqEndDateField">
+          <label for="reqEndDate">End date</label>
+          <input type="date" id="reqEndDate" />
+        </div>
+      </div>
+      <div class="small hidden" id="reqPtoRangeHint" style="margin-top:-8px;margin-bottom:14px;">
+        For a week off, pick the first and last day out — enter total hours for the whole stretch, same as always.
       </div>
       <div class="field">
         <label for="reqNote">Note (optional)</label>
@@ -313,6 +358,14 @@
       </div>
       <button class="primary" id="reqSubmitBtn">Log it</button>
       <div id="reqMsg" class="msg"></div>
+
+      <h2 style="margin-top:24px;">PTO Calendar</h2>
+      <div class="row" style="align-items:center;">
+        <button type="button" id="ptoCalPrevBtn">&larr; prev</button>
+        <div id="ptoCalLabel" style="font-weight:600;min-width:160px;text-align:center;"></div>
+        <button type="button" id="ptoCalNextBtn">next &rarr;</button>
+      </div>
+      <div id="ptoCalendar" class="pto-calendar"></div>
 
       <h2 style="margin-top:24px;">Pending (not yet on a payroll run)</h2>
       <div class="table-wrap">
