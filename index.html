@@ -95,7 +95,11 @@
   .field { margin-bottom: 14px; }
   .money { background: var(--yellow); }
   .row { display: flex; gap: 12px; }
-  .row > .field { flex: 1; }
+  .row > .field { flex: 1; min-width: 0; }
+  .row > .field label {
+    min-height: 32px; /* reserves 2 lines so short and long labels in the
+                          same row still leave their inputs lined up */
+  }
   input.locked {
     background: var(--panel);
     color: var(--muted);
@@ -357,13 +361,17 @@
       <div class="small hidden" id="reqPtoRangeHint" style="margin-top:-8px;margin-bottom:14px;">
         For a week off, pick the first and last day out — enter total hours for the whole stretch, same as always.
       </div>
+      <div class="field hidden" id="reqPtoPayrollDateField">
+        <label for="reqPtoPayrollDate">Payroll date (which paycheck this PTO applies to)</label>
+        <select id="reqPtoPayrollDate"></select>
+      </div>
       <div class="row hidden" id="reqPurchaseFields">
         <div class="field">
           <label for="reqProduct">Product purchased</label>
           <input type="text" id="reqProduct" required />
         </div>
         <div class="field">
-          <label for="reqCostPerUnit">Recent vendor cost per unit ($)</label>
+          <label for="reqCostPerUnit">Recent Vendor Cost ($)</label>
           <input type="number" step="0.01" min="0" id="reqCostPerUnit" required />
         </div>
         <div class="field">
@@ -376,6 +384,7 @@
         <input type="text" id="reqNote" placeholder="e.g. the reason for this request" required />
       </div>
       <button class="primary" id="reqSubmitBtn">Log it</button>
+      <button type="button" class="link hidden" id="reqCancelEditBtn" style="margin-left:10px;">Cancel edit</button>
       <div id="reqMsg" class="msg"></div>
 
       <h2 style="margin-top:24px;">PTO Calendar</h2>
@@ -389,7 +398,7 @@
       <h2 style="margin-top:24px;">Pending (not yet on a payroll run)</h2>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Note</th><th>Entered by</th></tr></thead>
+          <thead><tr><th>Type</th><th>Employee</th><th>Amount / Hours</th><th>Date</th><th>Applies to payroll</th><th>Note</th><th>Entered by</th><th></th></tr></thead>
           <tbody id="pendingRows"></tbody>
         </table>
       </div>

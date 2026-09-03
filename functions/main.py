@@ -156,12 +156,15 @@ def list_employee_names(req: https_fn.CallableRequest):
 def generate_payroll_report(req: https_fn.CallableRequest):
     """Owner-only. Builds the payroll report from the uploaded raw
     timeclock CSV plus every currently-pending (payrollDate == null)
-    request in the four payroll-request collections. When `finalize` is
-    true, stamps payrollDate + recordedAt/recordedBy on every request it
-    used, so it's never picked up again -- this IS the official record
-    of "this request was included in payroll on this date," replacing
-    the old Excel tracker's 'Recorded in ADP' column. When finalize is
-    false, nothing in Firestore is touched -- a safe preview."""
+    request in the four payroll-request collections -- except PTO, which
+    only counts if its targetPayrollDate matches this run's pay_period_id
+    (see the filtering below); the other three types always sweep in
+    regardless of pay period. When `finalize` is true, stamps payrollDate +
+    recordedAt/recordedBy on every request it used, so it's never picked up
+    again -- this IS the official record of "this request was included in
+    payroll on this date," replacing the old Excel tracker's 'Recorded in
+    ADP' column. When finalize is false, nothing in Firestore is touched --
+    a safe preview."""
     db = firestore.client()
     role = _require_role(req, db, {"admin"})
 
@@ -221,7 +224,27 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     pending = {}
     for coll_name in _REQUEST_COLLECTIONS:
         docs = db.collection(coll_name).where("payrollDate", "==", None).stream()
-        pending[coll_name] = [{"id": d.id, **d.to_dict()} for d in docs]
+        docs_data = [{"id": d.id, **d.to_dict()} for d in docs]
+        if coll_name == "ptoRequests":
+            # Employee Purchases, Delivery/Misc, and Reimbursements always
+            # sweep into whichever payroll run happens next -- that's the
+            # existing, correct behavior for those three. PTO is different:
+            # someone can request time off weeks or months before they
+            # actually take it, and that PTO shouldn't get charged against
+            # an earlier paycheck just because it happened to be pending
+            # when that earlier report ran. Each PTO request now carries a
+            # `targetPayrollDate` (set on the Payroll Requests tab, defaults
+            # to the next pay date on/after the time off starts, but can be
+            # overridden) naming the exact pay period it should hit, so only
+            # PTO scheduled for *this* run's pay_period_id is included here.
+            # A record with no targetPayrollDate at all predates this field
+            # (added 9/3/2026) and falls back to the old "next report picks
+            # it up" behavior so nothing already pending gets stranded.
+            docs_data = [
+                d for d in docs_data
+                if d.get("targetPayrollDate") in (None, pay_period_id)
+            ]
+        pending[coll_name] = docs_data
 
     try:
         wb_bytes, summary, warnings, consumed_ids = report_builder.build_report(

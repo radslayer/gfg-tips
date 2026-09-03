@@ -12,7 +12,7 @@ import {
   getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, addDoc, deleteDoc, collection, getDocs, orderBy, query,
+  getFirestore, doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc, collection, getDocs, orderBy, query,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getFunctions, httpsCallable,
@@ -113,6 +113,9 @@ let ptoEntriesCache = []; // [{employeeName, startDate, endDate}, ...] for the c
 const today = new Date();
 let ptoCalYear = today.getFullYear();
 let ptoCalMonth = today.getMonth(); // 0-11
+let editingRequestId = null; // Firestore doc id of the pending request currently
+                              // loaded into the form for editing, or null when
+                              // the form is in normal "log a new one" mode.
 
 // ---------- DOM helpers ----------
 const $ = (id) => document.getElementById(id);
@@ -125,8 +128,7 @@ function setMsg(el, text, kind) {
   el.className = "msg" + (kind ? " " + kind : "");
 }
 
-function populatePayDateOptions() {
-  const sel = $("payDate");
+function populateDateSelect(sel) {
   sel.innerHTML = "";
   PAY_PERIOD_DATES.forEach((dateStr) => {
     const opt = document.createElement("option");
@@ -135,7 +137,20 @@ function populatePayDateOptions() {
     sel.appendChild(opt);
   });
 }
+function populatePayDateOptions() {
+  populateDateSelect($("payDate"));
+  populateDateSelect($("reqPtoPayrollDate"));
+}
 populatePayDateOptions();
+
+// Which pay period a PTO request should count against, by default: the
+// first upcoming pay date on or after the day the time off actually starts
+// -- someone can always override this in the dropdown (e.g. PTO that spans
+// a pay-period boundary, logged for whichever check they and Rod agree it
+// should hit).
+function suggestPayPeriodFor(dateStr) {
+  return PAY_PERIOD_DATES.find((dt) => dt >= dateStr) || PAY_PERIOD_DATES[PAY_PERIOD_DATES.length - 1];
+}
 
 // ---------- Tabs (one section visible at a time, per role) ----------
 function showSection(id) {
@@ -630,7 +645,12 @@ function updateReqDateFields() {
   $("reqDateLabel").textContent = isPto ? "Start date" : "Date";
   $("reqEndDateField").classList.toggle("hidden", !isPto);
   $("reqPtoRangeHint").classList.toggle("hidden", !isPto);
+  $("reqPtoPayrollDateField").classList.toggle("hidden", !isPto);
   if (isPto && !$("reqEndDate").value) $("reqEndDate").value = $("reqDate").value;
+  // Only re-suggest while logging a brand new PTO request -- while editing
+  // an existing one, startEditingRequest sets this explicitly from what's
+  // already on file, and this would otherwise stomp on that.
+  if (isPto && !editingRequestId) $("reqPtoPayrollDate").value = suggestPayPeriodFor($("reqDate").value);
 }
 // Employee Purchase is the one request type where we don't take a free-text
 // Note -- instead we capture what was bought, the current vendor cost per
@@ -671,10 +691,17 @@ updateReqPurchaseFields();
 // Default the date picker(s) to today, as a convenience.
 $("reqDate").value = new Date().toISOString().slice(0, 10);
 $("reqEndDate").value = $("reqDate").value;
+updateReqDateFields(); // re-run now that reqDate actually has today's value
 $("reqDate").addEventListener("change", () => {
   // Keep the end date from trailing before the start date if someone
   // changes the start after already picking an end.
   if ($("reqEndDate").value < $("reqDate").value) $("reqEndDate").value = $("reqDate").value;
+  // Re-suggest which paycheck this PTO applies to whenever the start date
+  // moves, unless we're editing an existing request (same reasoning as in
+  // updateReqDateFields).
+  if ($("reqType").value === "ptoRequests" && !editingRequestId) {
+    $("reqPtoPayrollDate").value = suggestPayPeriodFor($("reqDate").value);
+  }
 });
 
 $("reqSubmitBtn").addEventListener("click", async () => {
@@ -692,6 +719,7 @@ $("reqSubmitBtn").addEventListener("click", async () => {
   const costPerUnit = Number($("reqCostPerUnit").value);
   const units = Number($("reqUnits").value);
   const amount = isPurchase ? Math.round(costPerUnit * units * 100) / 100 : Number($("reqAmount").value);
+  const targetPayrollDate = isPto ? $("reqPtoPayrollDate").value : null;
 
   if (!employeeName) {
     setMsg($("reqMsg"), "Choose an employee -- if the list is empty, ask Rod to add employees first.", "error");
@@ -726,39 +754,118 @@ $("reqSubmitBtn").addEventListener("click", async () => {
     setMsg($("reqMsg"), "End date can't be before the start date.", "error");
     return;
   }
+  if (isPto && !targetPayrollDate) {
+    setMsg($("reqMsg"), "Choose which paycheck this PTO should apply to.", "error");
+    return;
+  }
+
+  const payload = {
+    employeeName,
+    [info.amountField]: amount,
+    date,
+    endDate,
+    note: isPurchase ? null : note,
+    ...(isPurchase ? {
+      productPurchased: product,
+      costPerUnit,
+      unitsPurchased: units,
+    } : {}),
+    ...(isPto ? { targetPayrollDate } : {}),
+  };
 
   $("reqSubmitBtn").disabled = true;
   try {
-    await addDoc(collection(db, type), {
-      employeeName,
-      [info.amountField]: amount,
-      date,
-      endDate,
-      note: isPurchase ? null : note,
-      ...(isPurchase ? {
-        productPurchased: product,
-        costPerUnit,
-        unitsPurchased: units,
-      } : {}),
-      enteredBy: auth.currentUser.email,
-      enteredAt: new Date().toISOString(),
-      payrollDate: null,
-      recordedAt: null,
-      recordedBy: null,
-    });
-    setMsg($("reqMsg"), "Logged.", "ok");
-    $("reqAmount").value = "";
-    $("reqNote").value = "";
-    $("reqProduct").value = "";
-    $("reqCostPerUnit").value = "";
-    $("reqUnits").value = "";
+    if (editingRequestId) {
+      // Type is locked while editing (see startEditingRequest) specifically
+      // because each type is its own Firestore collection -- switching type
+      // would mean moving the record to a different collection, and these
+      // records can never be deleted (see firestore.rules), so there'd be
+      // no way to remove it from the old one.
+      await updateDoc(doc(db, type, editingRequestId), {
+        ...payload,
+        lastEditedBy: auth.currentUser.email,
+        lastEditedAt: new Date().toISOString(),
+      });
+      setMsg($("reqMsg"), "Updated.", "ok");
+      stopEditingRequest();
+    } else {
+      await addDoc(collection(db, type), {
+        ...payload,
+        enteredBy: auth.currentUser.email,
+        enteredAt: new Date().toISOString(),
+        payrollDate: null,
+        recordedAt: null,
+        recordedBy: null,
+      });
+      setMsg($("reqMsg"), "Logged.", "ok");
+      $("reqAmount").value = "";
+      $("reqNote").value = "";
+      $("reqProduct").value = "";
+      $("reqCostPerUnit").value = "";
+      $("reqUnits").value = "";
+    }
     loadPayrollRequests();
   } catch (err) {
-    setMsg($("reqMsg"), "Couldn't log it: " + err.message, "error");
+    setMsg($("reqMsg"), (editingRequestId ? "Couldn't save changes: " : "Couldn't log it: ") + err.message, "error");
   } finally {
     $("reqSubmitBtn").disabled = false;
   }
 });
+
+// Loads an existing pending request's values into the form above so it can
+// be corrected, instead of only ever being able to log new ones. Type stays
+// locked (see the comment in the submit handler for why); Employee, Amount/
+// Hours, dates, and Note (or the purchase breakdown) are all still editable.
+function startEditingRequest(row) {
+  editingRequestId = row.id;
+  $("reqType").value = row.type;
+  $("reqType").disabled = true;
+  updateReqAmountLabel();
+  updateReqDateFields();
+  updateReqPurchaseFields();
+
+  $("reqEmployee").value = row.employeeName;
+  $("reqDate").value = row.date;
+  $("reqEndDate").value = row.endDate;
+  if (row.type === "ptoRequests") {
+    // Fall back to a suggestion for PTO logged before this field existed.
+    $("reqPtoPayrollDate").value = row.targetPayrollDate || suggestPayPeriodFor(row.date);
+  }
+
+  if (row.type === "employeePurchases") {
+    $("reqProduct").value = row.productPurchased || "";
+    $("reqCostPerUnit").value = row.costPerUnit ?? "";
+    $("reqUnits").value = row.unitsPurchased ?? "";
+    recomputePurchaseAmount();
+  } else {
+    $("reqNote").value = row.note || "";
+    $("reqAmount").value = row.amount;
+  }
+
+  $("reqSubmitBtn").textContent = "Save changes";
+  show($("reqCancelEditBtn"));
+  setMsg($("reqMsg"),
+    `Editing this ${REQ_TYPE_DISPLAY[row.type]} request -- Type can't be changed, but everything else can.`, "");
+  $("requestsCard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function stopEditingRequest() {
+  editingRequestId = null;
+  $("reqType").disabled = false;
+  $("reqSubmitBtn").textContent = "Log it";
+  hide($("reqCancelEditBtn"));
+  setMsg($("reqMsg"), "", "");
+  $("reqAmount").value = "";
+  $("reqNote").value = "";
+  $("reqProduct").value = "";
+  $("reqCostPerUnit").value = "";
+  $("reqUnits").value = "";
+  $("reqDate").value = new Date().toISOString().slice(0, 10);
+  $("reqEndDate").value = $("reqDate").value;
+  updateReqDateFields();
+  updateReqPurchaseFields();
+}
+$("reqCancelEditBtn").addEventListener("click", stopEditingRequest);
 
 // Fetches every request document (not just pending ones) and splits them
 // client-side into "pending" (payrollDate still null) and "history"
@@ -781,12 +888,17 @@ async function loadPayrollRequests() {
         ? `${data.productPurchased} — ${data.unitsPurchased ?? "?"} @ ${money(data.costPerUnit)}/unit`
         : data.note;
       const row = {
+        id: d.id,
         type,
         employeeName: data.employeeName,
         amount: data[info.amountField],
         date: data.date,
         endDate: data.endDate || data.date,
         note,
+        productPurchased: data.productPurchased,
+        costPerUnit: data.costPerUnit,
+        unitsPurchased: data.unitsPurchased,
+        targetPayrollDate: data.targetPayrollDate || null,
         enteredBy: data.enteredBy,
         payrollDate: data.payrollDate || null,
       };
@@ -824,10 +936,22 @@ function renderRequestRows(tbody, rows, showPayrollDate) {
       <td>${r.employeeName}</td>
       <td>${amtDisplay}</td>
       <td>${dateDisplay}</td>
+      ${showPayrollDate ? "" : `<td>${r.type === "ptoRequests" && r.targetPayrollDate ? formatPayDateLabel(r.targetPayrollDate) : ""}</td>`}
       <td>${r.note || ""}</td>
       <td>${r.enteredBy || ""}</td>
-      ${showPayrollDate ? `<td>${r.payrollDate || ""}</td>` : ""}
+      ${showPayrollDate ? `<td>${r.payrollDate || ""}</td>` : "<td></td>"}
     `;
+    if (!showPayrollDate) {
+      // Only pending requests are editable -- once payrollDate is stamped,
+      // firestore.rules blocks any further edit to the record (it's the
+      // permanent record of what actually went into that payroll run).
+      const editBtn = document.createElement("button");
+      editBtn.className = "link";
+      editBtn.type = "button";
+      editBtn.textContent = "edit";
+      editBtn.addEventListener("click", () => startEditingRequest(r));
+      tr.lastElementChild.appendChild(editBtn);
+    }
     tbody.appendChild(tr);
   });
 }
