@@ -108,6 +108,78 @@ def _load_sister_map_from_firestore(db):
     return sister_map
 
 
+# Read off the 8/28/2026 ADP Payroll Summary Guapo provided on 9/7/2026 --
+# ADP's own "Last, First" text, exactly as printed on that report. Several
+# of these differ from the everyday name already on file (a compound
+# legal surname, a middle name, a spelling variant) -- see
+# apply_confirmed_adp_names below, and report_builder.py's "ADP name
+# unconfirmed" warning, which is what this is closing out.
+_CONFIRMED_ADP_NAMES_20260907 = {
+    "Thao Nguyen": "Nguyen, Thao",
+    "Larry Chillson": "Chillson, Larry",
+    "Andrea Redlinger": "Redlinger, Andrea",
+    "Michelle Woods": "Woods, Michelle",
+    "Juan Aldana": "Aldana Mendez, Juan",
+    "Justin Freyta": "Freyta, Justin",
+    "Rosa Garcia": "Garcia, Rosa",
+    "Alejandro Gomez": "Gomez Garcia, Alejandro",
+    "Maria Jaimes": "Jaimes, Maria",
+    "Leticia Lupian": "Lupian, Leticia",
+    "Christina Mata": "Mata, Christina Ana",
+    "Donald Menifee": "Menifee, Donald",
+    "Fernando Munoz": "Munoz, Fernando",
+    "Mariana Ortiz": "Ortiz, Mariana",
+    "Michael Werner": "Werner, Michael",
+    "Rachel Willcutt": "Willcutt, Rachael",
+}
+
+
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=30)
+def apply_confirmed_adp_names(req: https_fn.CallableRequest):
+    """Owner-only, one-time (safe to re-run). Sets `adpName` on every
+    existing employee doc matched in _CONFIRMED_ADP_NAMES_20260907 above --
+    never touches anyone NOT in that mapping (someone the 8/28/2026 report
+    didn't include, e.g. Sam Gray, is simply left as still-unconfirmed
+    rather than guessed at), and never overwrites a doc that isn't there
+    (reported back as `skipped` instead).
+
+    Also creates Mike Gray's employee record for the first time -- he was
+    never in this collection at all (that's the gap that kept him off the
+    PTO-request dropdown, fixed 9/7/2026), so there's nothing to merge
+    into. Uses department/salaried/tip-eligible exactly as Guapo already
+    confirmed in chat that day, plus his ADP name from this same report.
+    Guarded by an existence check, so re-running this after Guapo has
+    since hand-edited Mike's record won't stomp on that edit."""
+    db = firestore.client()
+    _require_role(req, db, {"admin"})
+
+    updated = []
+    skipped = []
+    for name, adp_name in _CONFIRMED_ADP_NAMES_20260907.items():
+        doc_ref = db.collection("employees").document(name)
+        if doc_ref.get().exists:
+            doc_ref.set({"adpName": adp_name}, merge=True)
+            updated.append(name)
+        else:
+            skipped.append(name)
+
+    mike_ref = db.collection("employees").document("Mike Gray")
+    mike_created = False
+    if not mike_ref.get().exists:
+        mike_ref.set({
+            "name": "Mike Gray",
+            "department": "M",
+            "rate": None,
+            "tipEligible": False,
+            "salaried": True,
+            "adpName": "Gray, Mike",
+        })
+        mike_created = True
+        updated.append("Mike Gray")
+
+    return {"updated": updated, "skipped": skipped, "mikeCreated": mike_created}
+
+
 @https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=30)
 def seed_employees(req: https_fn.CallableRequest):
     """One-time (idempotent, safe to re-run) upload of the wage table into

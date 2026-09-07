@@ -62,8 +62,12 @@ ADP_COLUMNS = [
     "Misc Reimburse (grocery runs)", "2% S-Corp Medical",
 ]
 SALARIED_TEMPLATE_ROWS = [
-    {"Name": "Rod", "Department": "M"},
+    {"Name": "Rod", "Department": "M", "AdpName": "Salyer, Rod"},
 ]
+# AdpName confirmed 9/7/2026 (per Guapo, from the 8/28/2026 ADP Payroll
+# Summary) -- ADP's own "Last, First" text, same convention as
+# employees[name]["adp_name"] elsewhere, just hardcoded here since Rod
+# isn't a Firestore-backed employee doc.
 # Mike moved off this hardcoded list on 9/7/2026 (per Guapo) -- he's now a
 # normal Firestore `employees` record with salaried=True instead (see
 # build_report's handling of employees[name]["salaried"]), so he can appear
@@ -988,7 +992,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         return (f'=IFERROR(VLOOKUP({name_cell},{DED_SHEET}!$A${ded_first_row}:$E${ded_last_row},'
                 f'{field_col},FALSE),"")')
 
-    def write_row(name, na_columns, is_salaried, department_literal=None):
+    def write_row(name, na_columns, is_salaried, department_literal=None, display_name_literal=None):
         r = ws5.max_row + 1
         ws5.append([None] * len(ADP_COLUMNS))
         ws5.row_dimensions[r].height = 16
@@ -1003,7 +1007,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         # hours/tips/deductions lookups the moment that name stopped
         # matching the working name used everywhere else.
         name_key = '"' + name.replace('"', "'") + '"'
-        display_name = employees.get(name, {}).get("adp_name") or name
+        display_name = display_name_literal or employees.get(name, {}).get("adp_name") or name
         for col_name in ADP_COLUMNS:
             c = col_index[col_name]
             cell = ws5.cell(row=r, column=c)
@@ -1033,7 +1037,9 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         return r
 
     for template in SALARIED_TEMPLATE_ROWS:
-        write_row(template["Name"], SALARIED_NA_COLUMNS, True, department_literal=template["Department"])
+        write_row(template["Name"], SALARIED_NA_COLUMNS, True,
+                  department_literal=template["Department"],
+                  display_name_literal=template.get("AdpName"))
     for name in order:
         if employees[name].get("salaried"):
             # Firestore-backed salaried employee (e.g. Mike, added

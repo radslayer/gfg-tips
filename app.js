@@ -879,6 +879,30 @@ $("seedEmployeesBtn").addEventListener("click", async () => {
   }
 });
 
+// One-time (safe to re-run): applies the ADP-confirmed names Guapo read
+// off the 8/28/2026 ADP Payroll Summary on 9/7/2026, and creates Mike
+// Gray's employee record (previously missing -- see the PTO-request gap
+// this closed) using the details he'd already confirmed in chat.
+$("applyAdpNamesBtn").addEventListener("click", async () => {
+  setMsg($("applyAdpNamesMsg"), "Applying confirmed ADP names...", "");
+  $("applyAdpNamesBtn").disabled = true;
+  try {
+    const call = httpsCallable(functions, "apply_confirmed_adp_names");
+    const res = await call({});
+    const d = res.data;
+    let msg = `Updated ${d.updated.length}: ${d.updated.join(", ")}.`;
+    if (d.skipped.length) {
+      msg += ` Skipped (no employee doc yet, so nothing to update): ${d.skipped.join(", ")}.`;
+    }
+    setMsg($("applyAdpNamesMsg"), msg, "ok");
+    loadEmployees();
+  } catch (err) {
+    setMsg($("applyAdpNamesMsg"), "Failed: " + err.message, "error");
+  } finally {
+    $("applyAdpNamesBtn").disabled = false;
+  }
+});
+
 // ---------- Sister-company aliases (e.g. Easy Entrées) ----------
 // Someone punching the clock under an alias name (e.g. "EE Mariana")
 // gets those hours folded into the real employee's combined pay for
