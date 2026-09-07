@@ -72,6 +72,18 @@ def _load_employees_from_firestore(db):
             "department": d.get("department", ""),
             "rate": d.get("rate"),
             "tip_eligible": bool(d.get("tipEligible")),
+            # Added 9/7/2026 (per Guapo): a salaried person (no hourly rate)
+            # still needs one row on the ADP Entry sheet, not the normal
+            # hourly row -- see report_builder.build_report's handling of
+            # `salaried` for how this avoids a duplicate row.
+            "salaried": bool(d.get("salaried")),
+            # The name ADP itself has on file for this person, if it's ever
+            # been confirmed -- may differ from the everyday name above
+            # (e.g. a full legal name vs. a nickname). Left blank/None until
+            # someone confirms it in ADP; report_builder flags every
+            # employee still missing this rather than silently assuming
+            # ADP's name matches the app's.
+            "adp_name": (d.get("adpName") or "").strip() or None,
         }
         order.append(name)
     return employees, order

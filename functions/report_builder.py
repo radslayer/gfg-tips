@@ -62,9 +62,17 @@ ADP_COLUMNS = [
     "Misc Reimburse (grocery runs)", "2% S-Corp Medical",
 ]
 SALARIED_TEMPLATE_ROWS = [
-    {"Name": "Mike", "Department": "M"},
     {"Name": "Rod", "Department": "M"},
 ]
+# Mike moved off this hardcoded list on 9/7/2026 (per Guapo) -- he's now a
+# normal Firestore `employees` record with salaried=True instead (see
+# build_report's handling of employees[name]["salaried"]), so he can appear
+# in the "pick an employee" dropdown for logging his own PTO. Anyone else
+# who's salaried (no hourly rate) should go the same route -- add them via
+# the Employees tab with "Salaried" checked, not by editing this constant.
+# Rod stays here since moving him carries no benefit (he doesn't log
+# requests on himself through this app) and this list is one less thing to
+# touch on an already-working row.
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E5F")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
@@ -552,6 +560,36 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             "on file, so their hours are not in this report: " + ", ".join(unknown_names)
         )
 
+    # Added 9/7/2026 (per Guapo): flag disparities instead of hiding them.
+    # Two separate config gaps on the `employees` roster, checked every
+    # report run rather than assumed away:
+    rate_missing_names = sorted(
+        name for name in order
+        if employees[name]["rate"] is None and not employees[name].get("salaried")
+    )
+    if rate_missing_names:
+        warnings.append(
+            "These employees have no hourly rate on file and aren't marked "
+            "Salaried, so they're skipped entirely on the ADP Entry sheet: " +
+            ", ".join(rate_missing_names) + ". Set a rate, or check "
+            "\"Salaried\" for them, on the Employees tab."
+        )
+    # ADP may have a different name on file than the app does for someone
+    # (a full legal name vs. an everyday one) -- rather than assume they
+    # match, this is confirmed per employee (the "ADP name" field on the
+    # Employees tab) and flagged here whenever it's still unconfirmed.
+    adp_name_unconfirmed = sorted(
+        name for name in order if not employees[name].get("adp_name")
+    )
+    if adp_name_unconfirmed:
+        warnings.append(
+            "No confirmed ADP name on file for: " + ", ".join(adp_name_unconfirmed) +
+            ". The ADP Entry sheet uses their everyday name from the app "
+            "for now -- verify that matches ADP's own record (it may use a "
+            "full legal name instead) before importing, then set \"ADP "
+            "name\" on the Employees tab to stop this warning."
+        )
+
     # The tip split covers the full 4-week window -- combine this period's
     # days with the prior period's, for BOTH W2 employees and drivers alike
     # (fixed 9/3/2026 -- previously only drivers got this combination).
@@ -677,10 +715,11 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     r0 = title_block(ws0, "Employee Config", [
         "Source: the 'employees' collection (Firestore), maintained by the Owner.",
         "Blue = source input. Every other sheet looks up rate/department/tip-eligibility from here.",
+        "ADP Name blank = not yet confirmed against ADP's own record -- see the warnings banner.",
     ])
-    for i, h in enumerate(["Employee", "Department", "Hourly Rate", "Tip Eligible?"], start=1):
+    for i, h in enumerate(["Employee", "Department", "Hourly Rate", "Tip Eligible?", "Salaried?", "ADP Name"], start=1):
         ws0.cell(row=r0, column=i, value=h)
-    style_header(ws0, r0, 4)
+    style_header(ws0, r0, 6)
     cfg_first_row = r0 + 1
     for i, name in enumerate(order):
         info = employees[name]
@@ -691,7 +730,9 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         c.font = INPUT_FONT
         c.number_format = "$#,##0.00"
         ws0.cell(row=row, column=4, value="y" if info["tip_eligible"] else "n").font = INPUT_FONT
-        for cc in range(1, 5):
+        ws0.cell(row=row, column=5, value="y" if info.get("salaried") else "n").font = INPUT_FONT
+        ws0.cell(row=row, column=6, value=info.get("adp_name") or "(unconfirmed)").font = INPUT_FONT
+        for cc in range(1, 7):
             ws0.cell(row=row, column=cc).border = THIN
     cfg_last_row = cfg_first_row + len(order) - 1
     autosize(ws0)
@@ -947,11 +988,22 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         return (f'=IFERROR(VLOOKUP({name_cell},{DED_SHEET}!$A${ded_first_row}:$E${ded_last_row},'
                 f'{field_col},FALSE),"")')
 
-    def write_row(name, na_columns, is_salaried):
+    def write_row(name, na_columns, is_salaried, department_literal=None):
         r = ws5.max_row + 1
         ws5.append([None] * len(ADP_COLUMNS))
         ws5.row_dimensions[r].height = 16
-        name_cell = f"A{r}"
+        # Every lookup below is keyed on the app's own working `name`
+        # (quoted as a literal, not a reference to this row's own Name
+        # cell) -- every other sheet (Config/Weekly/Tips/Deductions) is
+        # populated using that same working name. The Name cell itself may
+        # instead show the ADP-confirmed name (see display_name below),
+        # which can legitimately differ (a full legal name vs. an everyday
+        # one) -- if lookups were keyed off THAT cell instead, an employee
+        # with a confirmed ADP name would silently lose every one of their
+        # hours/tips/deductions lookups the moment that name stopped
+        # matching the working name used everywhere else.
+        name_key = '"' + name.replace('"', "'") + '"'
+        display_name = employees.get(name, {}).get("adp_name") or name
         for col_name in ADP_COLUMNS:
             c = col_index[col_name]
             cell = ws5.cell(row=r, column=c)
@@ -962,24 +1014,41 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 cell.fill = ADP_NA_FILL
                 continue
             if col_name == "Name":
-                cell.value = name
+                cell.value = display_name
             elif col_name == "Department":
-                cell.value = "M" if is_salaried else f'=VLOOKUP({name_cell},{CFG_SHEET}!$A${cfg_first_row}:$D${cfg_last_row},2,FALSE)'
+                if department_literal is not None:
+                    cell.value = department_literal
+                else:
+                    cell.value = f'=VLOOKUP({name_key},{CFG_SHEET}!$A${cfg_first_row}:$D${cfg_last_row},2,FALSE)'
             elif col_name == "Regular Hours" and not is_salaried:
-                cell.value = f'=IFERROR(VLOOKUP({name_cell},{WEEKLY_SHEET}!$A${pt_first_row}:$D${pt_last_row},2,FALSE),0)'
+                cell.value = f'=IFERROR(VLOOKUP({name_key},{WEEKLY_SHEET}!$A${pt_first_row}:$D${pt_last_row},2,FALSE),0)'
             elif col_name == "Overtime Hours" and not is_salaried:
-                cell.value = f'=IFERROR(VLOOKUP({name_cell},{WEEKLY_SHEET}!$A${pt_first_row}:$D${pt_last_row},3,FALSE),0)'
+                cell.value = f'=IFERROR(VLOOKUP({name_key},{WEEKLY_SHEET}!$A${pt_first_row}:$D${pt_last_row},3,FALSE),0)'
             elif col_name == "CC Tips Owed" and not is_salaried:
-                cell.value = f'=IFERROR(VLOOKUP({name_cell},{TIPS_SHEET}!$A${w2_rows_start}:$G${w2_rows_end},7,FALSE),"")'
+                cell.value = f'=IFERROR(VLOOKUP({name_key},{TIPS_SHEET}!$A${w2_rows_start}:$G${w2_rows_end},7,FALSE),"")'
             elif col_name == "2% S-Corp Medical" and name == ROD_ROW_NAME and rod_medical is not None:
                 cell.value = rod_medical
             elif col_name in DED_COLS:
-                cell.value = ded_lookup(DED_COLS[col_name], name_cell)
+                cell.value = ded_lookup(DED_COLS[col_name], name_key)
         return r
 
     for template in SALARIED_TEMPLATE_ROWS:
-        write_row(template["Name"], SALARIED_NA_COLUMNS, True)
+        write_row(template["Name"], SALARIED_NA_COLUMNS, True, department_literal=template["Department"])
     for name in order:
+        if employees[name].get("salaried"):
+            # Firestore-backed salaried employee (e.g. Mike, added
+            # 9/7/2026) -- one salaried-shaped row, department pulled live
+            # from Employee Config like everyone else here, NOT a second
+            # hardcoded literal. Never combine this with the hourly branch
+            # below for the same person, or they'd get two rows and their
+            # PTO/deductions would double-count in the Totals row.
+            write_row(name, SALARIED_NA_COLUMNS, True)
+            continue
+        if employees[name]["rate"] is None:
+            # No hourly rate on file and not marked Salaried -- flagged
+            # separately via rate_missing_names above rather than writing
+            # a broken all-zero row here.
+            continue
         write_row(name, HOURLY_NA_COLUMNS, False)
 
     first_data_row = 2

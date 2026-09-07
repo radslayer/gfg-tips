@@ -654,6 +654,8 @@ function renderEmployeeRows() {
       <td>${e.department || ""}</td>
       <td>${e.rate != null ? Number(e.rate).toFixed(2) : ""}</td>
       <td>${e.tipEligible ? "Yes" : "No"}</td>
+      <td>${e.salaried ? "Yes" : "No"}</td>
+      <td>${e.adpName ? e.adpName : "<span style=\"color:var(--danger);\">unconfirmed</span>"}</td>
     `;
     const editTd = document.createElement("td");
     const editBtn = document.createElement("button");
@@ -665,6 +667,8 @@ function renderEmployeeRows() {
       $("empDept").value = e.department || "";
       $("empRate").value = e.rate != null ? e.rate : "";
       $("empTipEligible").value = e.tipEligible ? "y" : "n";
+      $("empSalaried").value = e.salaried ? "y" : "n";
+      $("empAdpName").value = e.adpName || "";
       $("employeesCard").scrollIntoView({ behavior: "smooth", block: "start" });
     });
     editTd.appendChild(editBtn);
@@ -679,6 +683,8 @@ $("empSaveBtn").addEventListener("click", async () => {
   const department = $("empDept").value.trim();
   const rateRaw = $("empRate").value;
   const tipEligible = $("empTipEligible").value === "y";
+  const salaried = $("empSalaried").value === "y";
+  const adpName = $("empAdpName").value.trim();
   if (!name) {
     setMsg($("empMsg"), "Enter a name.", "error");
     return;
@@ -689,12 +695,16 @@ $("empSaveBtn").addEventListener("click", async () => {
       department,
       rate: rateRaw !== "" ? Number(rateRaw) : null,
       tipEligible,
+      salaried,
+      adpName: adpName || null,
     }, { merge: true });
     setMsg($("empMsg"), "Saved.", "ok");
     $("empName").value = "";
     $("empDept").value = "";
     $("empRate").value = "";
     $("empTipEligible").value = "y";
+    $("empSalaried").value = "n";
+    $("empAdpName").value = "";
     loadEmployees();
   } catch (err) {
     setMsg($("empMsg"), "Save failed: " + err.message, "error");
