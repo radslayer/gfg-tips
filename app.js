@@ -1260,6 +1260,30 @@ function stopEditingRequest() {
 }
 $("reqCancelEditBtn").addEventListener("click", stopEditingRequest);
 
+// Added 9/8/2026 (per Guapo): historyRows alone -- some request actually
+// stamped payrollDate == a given date -- undercounts which pay dates have
+// really been finalized, because it only ever sees a date once something
+// was pending to sweep into it. 9/11 finalized with nothing pending (no
+// PTO/purchase/delivery/reimbursement requests that period), so it never
+// showed up there, and kept being offered/defaulted on the request form
+// even after it had already been run. generate_payroll_report's finalize
+// branch unconditionally merges a w2ManDays field onto that pay date's
+// tipsPeriods doc every time it runs (tip week or not -- see main.py's
+// comment on that write), so that field's mere presence -- not its
+// content -- is the reliable "this date was actually run" signal,
+// independent of whether anything got swept. tipsPeriods is readable by
+// every signed-in role (see firestore.rules' canUseTipsForm), so this
+// works the same for a Manager logging a request as it does for the
+// Owner.
+async function loadFinalizedTipsPeriods() {
+  const snap = await getDocs(collection(db, "tipsPeriods"));
+  const dates = new Set();
+  snap.forEach((d) => {
+    if ("w2ManDays" in d.data()) dates.add(d.id);
+  });
+  return dates;
+}
+
 // Fetches every request document (not just pending ones) and splits them
 // client-side into "pending" (payrollDate still null, not voided),
 // "history" (already swept into a payroll run), and "voided" (excluded from
@@ -1338,7 +1362,14 @@ async function loadPayrollRequests() {
   // became finalized (e.g. mid-edit, someone else ran that period), it
   // gets bumped to the next open date automatically -- a finalized date
   // is never left selected, editing included.
-  finalizedPayrollDatesSet = new Set(historyRows.map((r) => r.payrollDate));
+  // Union both signals -- see loadFinalizedTipsPeriods above for why
+  // historyRows by itself isn't enough (misses a date finalized with
+  // nothing pending to sweep, which is exactly what happened with 9/11).
+  const finalizedFromTipsPeriods = await loadFinalizedTipsPeriods();
+  finalizedPayrollDatesSet = new Set([
+    ...historyRows.map((r) => r.payrollDate),
+    ...finalizedFromTipsPeriods,
+  ]);
   populateReqPtoPayrollDateOptions();
 }
 
