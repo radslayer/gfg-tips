@@ -575,6 +575,72 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     }
 
 
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=60)
+def unfinalize_payroll_date(req: https_fn.CallableRequest):
+    """Owner-only. Reverses a generate_payroll_report finalize for one pay
+    date: every request across the four payroll-request collections
+    currently stamped with that payrollDate goes back to pending
+    (payrollDate/recordedAt/recordedBy reset to null), so it can be
+    correctly swept into whichever report actually finalizes next.
+
+    Added 9/8/2026 (per Guapo) after re-running a report to fix one stuck
+    purchase accidentally finalized the wrong pay period (9/25) instead --
+    see firestore.rules for why this can't be done from the client app at
+    all (a request can never be edited once payrollDate is stamped) and
+    has to go through the Admin SDK here instead.
+
+    This does NOT silently erase the record of the original finalize --
+    per that same firestore.rules design note (permanent record, a
+    correction is new data, not a silent edit), each reversed doc also
+    gets `unfinalizedAt`/`unfinalizedBy` stamped, and the payrollDate/
+    recordedAt/recordedBy values it had are preserved under
+    `previouslyRecorded` rather than being overwritten with nothing. So
+    there's still a durable trail of "this was finalized under X on Y,
+    then reversed by Z on W," even though the request itself is pending
+    again and can be picked up by a future run."""
+    db = firestore.client()
+    _require_role(req, db, {"admin"})
+
+    payroll_date = (req.data or {}).get("payrollDate")
+    if not payroll_date:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            "payrollDate is required (the pay date currently stamped on the "
+            "requests you want reversed, e.g. '2026-09-25').")
+
+    who = req.auth.token.get("email", req.auth.uid)
+    now = datetime.now(timezone.utc).isoformat()
+
+    batch = db.batch()
+    reversed_by_collection = {}
+    for coll_name in _REQUEST_COLLECTIONS:
+        docs = db.collection(coll_name).where("payrollDate", "==", payroll_date).stream()
+        ids = []
+        for d in docs:
+            existing = d.to_dict()
+            batch.update(d.reference, {
+                "payrollDate": None,
+                "recordedAt": None,
+                "recordedBy": None,
+                "unfinalizedAt": now,
+                "unfinalizedBy": who,
+                "previouslyRecorded": {
+                    "payrollDate": existing.get("payrollDate"),
+                    "recordedAt": existing.get("recordedAt"),
+                    "recordedBy": existing.get("recordedBy"),
+                },
+            })
+            ids.append(d.id)
+        if ids:
+            reversed_by_collection[coll_name] = ids
+
+    reversed_count = sum(len(v) for v in reversed_by_collection.values())
+    if reversed_count:
+        batch.commit()
+
+    return {"reversedCount": reversed_count, "byCollection": reversed_by_collection}
+
+
 @scheduler_fn.on_schedule(schedule="0 3 1 * *", timezone="America/Denver",
                            region="us-central1", memory=options.MemoryOption.MB_256)
 def backup_payroll_data(event) -> None:

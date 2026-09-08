@@ -691,6 +691,23 @@
           </table>
         </div>
       </div>
+
+      <div style="margin-top:26px; padding-top:18px; border-top:1px solid var(--border);">
+        <h2 style="font-size:14px;">Un-finalize a pay date</h2>
+        <div class="small" style="margin-bottom:10px;">
+          Reverses a finalize done by mistake: every PTO/purchase/delivery/reimbursement request
+          currently stamped with the pay date below goes back to pending, so it can be swept into
+          whatever report actually finalizes next. Nothing is erased -- each reversed request keeps
+          what it was stamped before under "previously recorded," so there's still a trail of what
+          happened, it's just pending again.
+        </div>
+        <div class="field" style="max-width:220px;">
+          <label for="unfinalizeDate">Pay date to un-finalize</label>
+          <input type="date" id="unfinalizeDate" />
+        </div>
+        <button id="unfinalizeBtn">Un-finalize this pay date</button>
+        <div id="unfinalizeMsg" class="msg small"></div>
+      </div>
     </div>
 
   </div>

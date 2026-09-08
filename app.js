@@ -1511,6 +1511,44 @@ $("generateReportBtn").addEventListener("click", async () => {
   }
 });
 
+// Added 9/8/2026 (per Guapo): a re-run to fix one stuck request can finalize
+// the wrong pay date by mistake (the Pay period dropdown had moved on since
+// the last real run) -- this is the fix for that. firestore.rules won't let
+// the client edit a request once payrollDate is stamped, so this has to go
+// through the unfinalize_payroll_date Cloud Function (Admin SDK, bypasses
+// that rule on purpose, Owner-only). See that function's docstring for what
+// it does and does not erase.
+$("unfinalizeBtn").addEventListener("click", async () => {
+  const payrollDate = $("unfinalizeDate").value;
+  if (!payrollDate) {
+    setMsg($("unfinalizeMsg"), "Pick the pay date currently stamped on the requests you want reversed.", "error");
+    return;
+  }
+  const ok = window.confirm(
+    `This will find every PTO / Employee Purchase / Delivery-Misc / Reimbursement request ` +
+    `currently stamped "on ${payrollDate}" -- across ALL employees -- and move it back to ` +
+    `pending. It does not erase the record of the original finalize (kept under "previously ` +
+    `recorded" on each request), but it does unlock them for editing/voiding again, and they'll ` +
+    `be swept into whatever report actually finalizes next.
+
+Continue?`
+  );
+  if (!ok) return;
+
+  $("unfinalizeBtn").disabled = true;
+  setMsg($("unfinalizeMsg"), "Working...", "");
+  try {
+    const call = httpsCallable(functions, "unfinalize_payroll_date");
+    const res = await call({ payrollDate });
+    setMsg($("unfinalizeMsg"), `Done -- ${res.data.reversedCount} request(s) reversed and back to pending.`, "ok");
+    loadPayrollRequests();
+  } catch (err) {
+    setMsg($("unfinalizeMsg"), "Couldn't un-finalize: " + err.message, "error");
+  } finally {
+    $("unfinalizeBtn").disabled = false;
+  }
+});
+
 // Quick-action follow-up for the "these names appear in the timeclock
 // export but have no wage rate on file" warning (added 9/3/2026, per Rod).
 // The system genuinely can't tell whether an unrecognized name is a new
