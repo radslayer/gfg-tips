@@ -1063,8 +1063,17 @@ $("reqSubmitBtn").addEventListener("click", async () => {
     setMsg($("reqMsg"), "Enter a note.", "error");
     return;
   }
-  if (!amount || amount <= 0) {
-    setMsg($("reqMsg"), `Enter a positive ${info.label.toLowerCase()}.`, "error");
+  // PTO alone allows 0 -- added 9/7/2026 (per Guapo): the calendar is also
+  // used to mark an employee's time away from work with no PTO hours
+  // actually deducted (e.g. logging his own vacation on a record with no
+  // wage rate). Every other type (Purchases/Misc Amount/Misc Reimburse)
+  // still requires a real positive dollar amount -- a $0 entry there
+  // wouldn't mean anything.
+  if (isPto ? (amount === null || amount === undefined || isNaN(amount) || amount < 0)
+            : (!amount || amount <= 0)) {
+    setMsg($("reqMsg"), isPto
+      ? "Enter zero or more hours."
+      : `Enter a positive ${info.label.toLowerCase()}.`, "error");
     return;
   }
   if (!date || (isPto && !endDate)) {
