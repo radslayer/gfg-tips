@@ -1261,6 +1261,43 @@ async function loadPayrollRequests() {
   renderRequestRows($("historyRows"), historyRows, "history");
   renderRequestRows($("voidedRows"), voidedRows, "voided");
   renderPtoCalendar();
+
+  // historyRows is already sorted newest-first (above), so de-duping by
+  // first occurrence keeps that order -- see populateUnfinalizeDateOptions.
+  populateUnfinalizeDateOptions([...new Set(historyRows.map((r) => r.payrollDate))]);
+}
+
+// Added 9/8/2026 (per Guapo): a free-pick calendar let you "un-finalize"
+// any date at all, most of which have nothing on them to reverse -- this
+// instead only ever lists pay dates that currently have at least one
+// finalized (payrollDate-stamped) request, newest first, so the one you
+// almost always want is the obvious top choice. Called from
+// loadPayrollRequests() every time it refreshes, so this stays current
+// after any finalize, un-finalize, or void.
+function populateUnfinalizeDateOptions(datesNewestFirst) {
+  const sel = $("unfinalizeDate");
+  if (!sel) return;
+  const previousValue = sel.value;
+  sel.innerHTML = "";
+  if (!datesNewestFirst.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No finalized pay dates yet";
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  datesNewestFirst.forEach((dateStr, i) => {
+    const opt = document.createElement("option");
+    opt.value = dateStr;
+    opt.textContent = formatPayDateLabel(dateStr) + (i === 0 ? "  (most recent)" : "");
+    sel.appendChild(opt);
+  });
+  // Keep whatever was already selected if it's still in the list (e.g. a
+  // refresh triggered by something unrelated); otherwise default to the
+  // most recent one, since that's almost always the one being corrected.
+  sel.value = datesNewestFirst.includes(previousValue) ? previousValue : datesNewestFirst[0];
 }
 
 // Each request renders as a small stacked card rather than a table row --
