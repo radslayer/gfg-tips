@@ -172,6 +172,14 @@ let ptoCalMonth = today.getMonth(); // 0-11
 let editingRequestId = null; // Firestore doc id of the pending request currently
                               // loaded into the form for editing, or null when
                               // the form is in normal "log a new one" mode.
+let finalizedPayrollDatesSet = new Set(); // Added 9/8/2026 (per Guapo): pay dates
+                              // (YYYY-MM-DD) that already have at least one request
+                              // stamped payrollDate == that date, i.e. a payroll run
+                              // has actually been pushed for it. Recomputed by
+                              // loadPayrollRequests() on every refresh -- see
+                              // populateReqPtoPayrollDateOptions/suggestPayPeriodFor,
+                              // which both use this to keep already-finalized dates
+                              // out of the "Payroll date" picker on new requests.
 
 // ---------- DOM helpers ----------
 const $ = (id) => document.getElementById(id);
@@ -195,17 +203,65 @@ function populateDateSelect(sel) {
 }
 function populatePayDateOptions() {
   populateDateSelect($("payDate"));
-  populateDateSelect($("reqPtoPayrollDate"));
+  populateReqPtoPayrollDateOptions();
 }
 populatePayDateOptions();
 
+// Added 9/8/2026 (per Guapo): 9/11 was showing up as the default -- and a
+// selectable option at all -- on the "Payroll date" picker for a brand new
+// PTO/etc. request the day after 9/11 had already been pushed to ADP,
+// because the old version just offered every date on PAY_PERIOD_DATES with
+// no idea any of them had already been finalized. Fixed again the same day
+// (per Guapo) to drop an earlier version of this fix that still let an
+// in-progress edit keep/select an already-finalized date -- once a date is
+// finalized, checks are already being cut against it, so there is no case
+// where it should be selectable, editing included. This now ALWAYS lists
+// only dates NOT in finalizedPayrollDatesSet (kept current by
+// loadPayrollRequests() on every refresh), no exceptions. If the date it's
+// asked to select (desiredDate -- from startEditingRequest, or the field's
+// own current value on a plain refresh) isn't one of those open dates
+// (missing, or already finalized), it's silently moved to
+// suggestPayPeriodFor's pick instead -- the return value says whether that
+// correction happened, so a caller like startEditingRequest can flag it to
+// the user rather than just going quiet about it.
+function populateReqPtoPayrollDateOptions(desiredDate) {
+  const sel = $("reqPtoPayrollDate");
+  if (!sel) return false;
+  const wanted = desiredDate !== undefined ? desiredDate : sel.value;
+  const openDates = PAY_PERIOD_DATES.filter((dt) => !finalizedPayrollDatesSet.has(dt));
+  sel.innerHTML = "";
+  openDates.forEach((dateStr) => {
+    const opt = document.createElement("option");
+    opt.value = dateStr;
+    opt.textContent = formatPayDateLabel(dateStr);
+    sel.appendChild(opt);
+  });
+  if (openDates.includes(wanted)) {
+    sel.value = wanted;
+    return false;
+  }
+  sel.value = suggestPayPeriodFor($("reqDate").value);
+  return true;
+}
+
 // Which pay period a PTO request should count against, by default: the
 // first upcoming pay date on or after the day the time off actually starts
-// -- someone can always override this in the dropdown (e.g. PTO that spans
-// a pay-period boundary, logged for whichever check they and Rod agree it
-// should hit).
+// that hasn't already been finalized (fixed 9/8/2026, per Guapo -- see
+// populateReqPtoPayrollDateOptions above for why finalized dates are kept
+// out of the dropdown entirely, not just skipped as a default) -- someone
+// can always override this in the dropdown (e.g. PTO that spans a
+// pay-period boundary, logged for whichever open check they and Rod agree
+// it should hit).
 function suggestPayPeriodFor(dateStr) {
-  return PAY_PERIOD_DATES.find((dt) => dt >= dateStr) || PAY_PERIOD_DATES[PAY_PERIOD_DATES.length - 1];
+  const upcoming = PAY_PERIOD_DATES.find((dt) => dt >= dateStr && !finalizedPayrollDatesSet.has(dt));
+  if (upcoming) return upcoming;
+  // dateStr is past every generated pay date, or (in principle) every
+  // remaining one is already finalized -- fall back to the last open date
+  // on the schedule rather than forcing a finalized one.
+  for (let i = PAY_PERIOD_DATES.length - 1; i >= 0; i--) {
+    if (!finalizedPayrollDatesSet.has(PAY_PERIOD_DATES[i])) return PAY_PERIOD_DATES[i];
+  }
+  return PAY_PERIOD_DATES[PAY_PERIOD_DATES.length - 1];
 }
 
 // ---------- Tabs (one section visible at a time, per role) ----------
@@ -1157,9 +1213,13 @@ function startEditingRequest(row) {
   $("reqEmployee").value = row.employeeName;
   $("reqDate").value = row.date;
   $("reqEndDate").value = row.endDate;
+  // Set only when editing a PTO request whose targetPayrollDate had to be
+  // moved off an already-finalized (or never-set) date -- see the message
+  // built from it below, and populateReqPtoPayrollDateOptions's comment
+  // for why that date is never left selectable, editing included.
+  let payrollDateWasCorrected = false;
   if (row.type === "ptoRequests") {
-    // Fall back to a suggestion for PTO logged before this field existed.
-    $("reqPtoPayrollDate").value = row.targetPayrollDate || suggestPayPeriodFor(row.date);
+    payrollDateWasCorrected = populateReqPtoPayrollDateOptions(row.targetPayrollDate);
   }
 
   if (row.type === "employeePurchases") {
@@ -1174,8 +1234,11 @@ function startEditingRequest(row) {
 
   $("reqSubmitBtn").textContent = "Save changes";
   show($("reqCancelEditBtn"));
-  setMsg($("reqMsg"),
-    `Editing this ${REQ_TYPE_DISPLAY[row.type]} request -- Type can't be changed, but everything else can.`, "");
+  let editMsg = `Editing this ${REQ_TYPE_DISPLAY[row.type]} request -- Type can't be changed, but everything else can.`;
+  if (payrollDateWasCorrected) {
+    editMsg += ` Its payroll date was already finalized (or never set), so it's been moved to ${formatPayDateLabel($("reqPtoPayrollDate").value)} -- pick a different open date instead if that's not the right one.`;
+  }
+  setMsg($("reqMsg"), editMsg, "");
   $("requestsCard").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -1265,6 +1328,18 @@ async function loadPayrollRequests() {
   // historyRows is already sorted newest-first (above), so de-duping by
   // first occurrence keeps that order -- see populateUnfinalizeDateOptions.
   populateUnfinalizeDateOptions([...new Set(historyRows.map((r) => r.payrollDate))]);
+
+  // Added 9/8/2026 (per Guapo): keep the "Payroll date" picker on the
+  // request form in sync with which dates have actually been finalized --
+  // see populateReqPtoPayrollDateOptions for why this can't just be
+  // computed once at page load. No desiredDate passed: it keeps the
+  // field's own current value if that's still open, same as before a
+  // finalize happened; if a background refresh finds that value just
+  // became finalized (e.g. mid-edit, someone else ran that period), it
+  // gets bumped to the next open date automatically -- a finalized date
+  // is never left selected, editing included.
+  finalizedPayrollDatesSet = new Set(historyRows.map((r) => r.payrollDate));
+  populateReqPtoPayrollDateOptions();
 }
 
 // Added 9/8/2026 (per Guapo): a free-pick calendar let you "un-finalize"
