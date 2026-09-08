@@ -864,44 +864,12 @@ $("createUserBtn").addEventListener("click", async () => {
   }
 });
 
-$("seedEmployeesBtn").addEventListener("click", async () => {
-  setMsg($("seedMsg"), "Loading starting roster...", "");
-  $("seedEmployeesBtn").disabled = true;
-  try {
-    const call = httpsCallable(functions, "seed_employees");
-    const res = await call({});
-    setMsg($("seedMsg"), `Seeded ${res.data.seeded} employees.`, "ok");
-    loadEmployees();
-  } catch (err) {
-    setMsg($("seedMsg"), "Failed: " + err.message, "error");
-  } finally {
-    $("seedEmployeesBtn").disabled = false;
-  }
-});
-
-// One-time (safe to re-run): applies the ADP-confirmed names Guapo read
-// off the 8/28/2026 ADP Payroll Summary on 9/7/2026, and creates Mike
-// Gray's employee record (previously missing -- see the PTO-request gap
-// this closed) using the details he'd already confirmed in chat.
-$("applyAdpNamesBtn").addEventListener("click", async () => {
-  setMsg($("applyAdpNamesMsg"), "Applying confirmed ADP names...", "");
-  $("applyAdpNamesBtn").disabled = true;
-  try {
-    const call = httpsCallable(functions, "apply_confirmed_adp_names");
-    const res = await call({});
-    const d = res.data;
-    let msg = `Updated ${d.updated.length}: ${d.updated.join(", ")}.`;
-    if (d.skipped.length) {
-      msg += ` Skipped (no employee doc yet, so nothing to update): ${d.skipped.join(", ")}.`;
-    }
-    setMsg($("applyAdpNamesMsg"), msg, "ok");
-    loadEmployees();
-  } catch (err) {
-    setMsg($("applyAdpNamesMsg"), "Failed: " + err.message, "error");
-  } finally {
-    $("applyAdpNamesBtn").disabled = false;
-  }
-});
+// Both one-time migration buttons that used to live here (seed the
+// starting roster; apply the 9/7/2026 ADP-confirmed names) have been run
+// and removed from the Employees tab (9/7/2026, per Guapo) -- the
+// underlying Cloud Functions (seed_employees, apply_confirmed_adp_names)
+// are left in place and are still safe to re-run by hand (e.g. via the
+// Firebase console) if ever needed, they just no longer have a button.
 
 // ---------- Sister-company aliases (e.g. Easy Entrées) ----------
 // Someone punching the clock under an alias name (e.g. "EE Mariana")
@@ -1485,6 +1453,30 @@ $("generateReportBtn").addEventListener("click", async () => {
     return;
   }
   const finalize = $("reportFinalize").checked;
+
+  // Added 9/7/2026 (per Guapo): the checkbox now defaults to checked, so
+  // the normal weekly action is one click that both produces the finished
+  // report AND locks in every pending request it used -- no more having to
+  // run this twice (once to preview, once for real). Since that lock-in is
+  // effectively permanent (firestore.rules blocks further edits to a
+  // request once its payrollDate is stamped -- see the Payroll Requests
+  // tab), this one native confirm is the last chance to catch an obviously
+  // wrong pay date or CSV before it's committed, without turning "one
+  // weekly action" back into a second full form-fill.
+  if (finalize) {
+    const ok = window.confirm(
+      `This will finalize payroll for ${currentPeriodId}: every currently-` +
+      "pending PTO / Employee Purchase / Delivery-Misc / Reimbursement " +
+      "request it uses gets permanently marked \"on this pay date\" and " +
+      "locked from further edits.\n\nDouble-check the pay date above and " +
+      "the CSV you chose, then OK to continue -- or Cancel to preview " +
+      "first (uncheck the box above)."
+    );
+    if (!ok) {
+      setMsg($("reportMsg"), "Cancelled -- nothing was generated or changed.", "");
+      return;
+    }
+  }
 
   $("generateReportBtn").disabled = true;
   setMsg($("reportMsg"), "Generating report... this can take a few seconds.", "");

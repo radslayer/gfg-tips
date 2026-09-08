@@ -1194,6 +1194,19 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         ])
         autosize(ws_e)
 
+    # Added 9/9/2026 (per Guapo): every sheet in this workbook prints
+    # landscape, fit to one page wide x one page tall by default. This only
+    # affects the Print/PDF layout (Excel's own "Fit Sheet on One Page"
+    # scaling) -- on screen, nothing changes: no zoom, no locked columns,
+    # still fully scrollable. Applied generically to wb.worksheets so it
+    # covers every sheet built above, including the optional driver/earnout
+    # sheets that only exist some report runs.
+    for ws_page in wb.worksheets:
+        ws_page.page_setup.orientation = "landscape"
+        ws_page.page_setup.fitToWidth = 1
+        ws_page.page_setup.fitToHeight = 1
+        ws_page.sheet_properties.pageSetUpPr.fitToPage = True
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
