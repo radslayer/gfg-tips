@@ -423,7 +423,7 @@
         </div>
       </div>
       <div class="row">
-        <div class="field">
+        <div class="field" id="reqAmountField">
           <label for="reqAmount" id="reqAmountLabel">Hours</label>
           <input type="number" step="0.01" id="reqAmount" />
         </div>
@@ -437,11 +437,21 @@
         </div>
       </div>
       <div class="small hidden" id="reqPtoRangeHint" style="margin-top:-8px;margin-bottom:14px;">
-        For a week off, pick the first and last day out — enter total hours for the whole stretch, same as always.
+        For a week off, pick the first and last day out — hours default to 8 per weekday in that
+        range (edit as needed). A stretch that crosses a pay period is logged automatically as one
+        request per paycheck below, instead of forced onto a single one.
       </div>
       <div class="field hidden" id="reqPtoPayrollDateField">
         <label for="reqPtoPayrollDate">Payroll date (which paycheck this PTO applies to)</label>
         <select id="reqPtoPayrollDate"></select>
+      </div>
+      <div class="field hidden" id="reqPtoSplitField">
+        <label>
+          This spans more than one pay period — it'll be logged as separate PTO requests, one per
+          paycheck below. Hours default to 8 per weekday actually in that period; edit any of them
+          if the split doesn't match how it should be paid out.
+        </label>
+        <div id="reqPtoSplitRows"></div>
       </div>
       <div class="row hidden" id="reqPurchaseFields">
         <div class="field">

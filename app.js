@@ -95,6 +95,86 @@ const PAY_PERIOD_DATES = generatePayPeriodDates(
   PAY_PERIOD_START, PAY_PERIOD_INTERVAL_DAYS, PAY_PERIOD_COUNT
 ).filter((dt) => dt >= PAY_PERIOD_DISPLAY_FLOOR);
 
+// Added 9/9/2026 (per Guapo): "we pay the Friday following a two-week
+// period (Sunday through Saturday)" -- so a PAY_PERIOD_DATES entry (a
+// Friday) is paid PAYROLL_LAG_DAYS after the Saturday that closes its own
+// two-week period, not on/right after the period itself. A default that
+// just picked the next pay date on or after a given day (the old
+// suggestPayPeriodFor) was therefore wrong by up to two weeks for any day
+// that actually fell in an EARLIER period's own window -- shifting the
+// target day forward by PAYROLL_LAG_DAYS before comparing against
+// PAY_PERIOD_DATES corrects for that with the same ">=" search, no need to
+// compute period start/end explicitly. WORKDAY_HOURS is the default used
+// per Mon-Fri day when logging PTO (per Guapo, 9/9/2026) -- always
+// editable, never enforced.
+const PAYROLL_LAG_DAYS = 6;
+const WORKDAY_HOURS = 8;
+
+function addDays(dateStr, days) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function isWeekday(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const day = new Date(y, m - 1, d).getDay(); // 0 = Sunday .. 6 = Saturday
+  return day >= 1 && day <= 5;
+}
+
+// Every Mon-Fri calendar day from startStr through endStr, inclusive.
+function workdaysInRange(startStr, endStr) {
+  const days = [];
+  for (let cur = startStr; cur <= endStr; cur = addDays(cur, 1)) {
+    if (isWeekday(cur)) days.push(cur);
+  }
+  return days;
+}
+
+// Which pay date's two-week period a given calendar day actually falls in
+// -- pure period membership, independent of whether that pay date has
+// since been finalized (see suggestPayPeriodFor below for the
+// finalized-aware version used when picking a single default).
+function payPeriodDateFor(dateStr) {
+  const target = addDays(dateStr, PAYROLL_LAG_DAYS);
+  return PAY_PERIOD_DATES.find((dt) => dt >= target) || PAY_PERIOD_DATES[PAY_PERIOD_DATES.length - 1];
+}
+
+// The next open (non-finalized) pay date after a given one -- used when a
+// PTO split's natural period has already been finalized (see
+// renderPtoSplitRows), the same "move it forward, don't leave a finalized
+// date selected" rule applied everywhere else in this file.
+function nextOpenPayDateAfter(payDate) {
+  const idx = PAY_PERIOD_DATES.indexOf(payDate);
+  for (let i = idx + 1; i < PAY_PERIOD_DATES.length; i++) {
+    if (!finalizedPayrollDatesSet.has(PAY_PERIOD_DATES[i])) return PAY_PERIOD_DATES[i];
+  }
+  return PAY_PERIOD_DATES[PAY_PERIOD_DATES.length - 1];
+}
+
+// Groups every Mon-Fri day in [startStr, endStr] by which pay period it
+// actually falls in, ascending by pay date -- one entry per period the
+// range touches, each defaulted to WORKDAY_HOURS per weekday in it. A
+// range that stays inside a single period comes back as a one-entry array
+// (see refreshPtoScheduling, which treats that the same as before: one
+// record, the normal single Hours field and Payroll date picker). More
+// than one entry means the range spans a pay-period boundary.
+function splitWorkdaysByPayPeriod(startStr, endStr) {
+  const byPeriod = new Map();
+  workdaysInRange(startStr, endStr).forEach((day) => {
+    const payDate = payPeriodDateFor(day);
+    if (!byPeriod.has(payDate)) byPeriod.set(payDate, []);
+    byPeriod.get(payDate).push(day);
+  });
+  return [...byPeriod.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([payDate, days]) => ({ payDate, days, hours: days.length * WORKDAY_HOURS }));
+}
+
 // Only every OTHER payroll date actually distributes tips (net tip pool
 // split by man-days/days-driven) -- the rest are still real payroll runs
 // (drivers still get paid Deliveries $/Setups $ that period), just with
@@ -172,6 +252,13 @@ let ptoCalMonth = today.getMonth(); // 0-11
 let editingRequestId = null; // Firestore doc id of the pending request currently
                               // loaded into the form for editing, or null when
                               // the form is in normal "log a new one" mode.
+let currentPtoSplits = []; // Added 9/9/2026 (per Guapo): the pay-period breakdown
+                              // refreshPtoScheduling last computed for the PTO form's
+                              // current Start/End dates -- [] or one entry means a normal
+                              // single-record request; more than one means the range spans
+                              // a pay-period boundary and the submit handler logs one PTO
+                              // request per entry instead of a single one. See
+                              // splitWorkdaysByPayPeriod/refreshPtoScheduling.
 let finalizedPayrollDatesSet = new Set(); // Added 9/8/2026 (per Guapo): pay dates
                               // (YYYY-MM-DD) that already have at least one request
                               // stamped payrollDate == that date, i.e. a payroll run
@@ -253,7 +340,8 @@ function populateReqPtoPayrollDateOptions(desiredDate) {
 // pay-period boundary, logged for whichever open check they and Rod agree
 // it should hit).
 function suggestPayPeriodFor(dateStr) {
-  const upcoming = PAY_PERIOD_DATES.find((dt) => dt >= dateStr && !finalizedPayrollDatesSet.has(dt));
+  const target = addDays(dateStr, PAYROLL_LAG_DAYS);
+  const upcoming = PAY_PERIOD_DATES.find((dt) => dt >= target && !finalizedPayrollDatesSet.has(dt));
   if (upcoming) return upcoming;
   // dateStr is past every generated pay date, or (in principle) every
   // remaining one is already finalized -- fall back to the last open date
@@ -1024,10 +1112,72 @@ function updateReqDateFields() {
   $("reqPtoRangeHint").classList.toggle("hidden", !isPto);
   $("reqPtoPayrollDateField").classList.toggle("hidden", !isPto);
   if (isPto && !$("reqEndDate").value) $("reqEndDate").value = $("reqDate").value;
-  // Only re-suggest while logging a brand new PTO request -- while editing
-  // an existing one, startEditingRequest sets this explicitly from what's
-  // already on file, and this would otherwise stomp on that.
-  if (isPto && !editingRequestId) $("reqPtoPayrollDate").value = suggestPayPeriodFor($("reqDate").value);
+  // Default to single-record display; refreshPtoScheduling below switches
+  // to the split panel instead, but only when logging a brand new PTO
+  // request whose range spans more than one pay period -- never while
+  // editing an existing one (see that function's comment).
+  hide($("reqPtoSplitField"));
+  show($("reqAmountField"));
+  refreshPtoScheduling();
+}
+
+// Added 9/9/2026 (per Guapo): recomputes the Hours default and the
+// Payroll date picker (or, if the Start/End range now spans more than one
+// pay period, switches to the split panel instead) every time the type or
+// either date changes on a brand-new PTO request. Never touches anything
+// while editing an existing one -- startEditingRequest sets the single
+// Hours/Payroll date fields explicitly from what's already on file, and
+// this would otherwise stomp on that (same reasoning the old inline
+// version of this had).
+function refreshPtoScheduling() {
+  if ($("reqType").value !== "ptoRequests" || editingRequestId) return;
+  const startStr = $("reqDate").value;
+  const endStr = $("reqEndDate").value;
+  currentPtoSplits = (startStr && endStr && endStr >= startStr)
+    ? splitWorkdaysByPayPeriod(startStr, endStr)
+    : [];
+
+  if (currentPtoSplits.length > 1) {
+    hide($("reqAmountField"));
+    hide($("reqPtoPayrollDateField"));
+    renderPtoSplitRows(currentPtoSplits);
+    show($("reqPtoSplitField"));
+  } else {
+    hide($("reqPtoSplitField"));
+    show($("reqAmountField"));
+    show($("reqPtoPayrollDateField"));
+    $("reqAmount").value = currentPtoSplits.length ? currentPtoSplits[0].hours : 0;
+    populateReqPtoPayrollDateOptions();
+    $("reqPtoPayrollDate").value = suggestPayPeriodFor(startStr || $("reqDate").value);
+  }
+}
+
+function renderPtoSplitRows(splits) {
+  const container = $("reqPtoSplitRows");
+  container.innerHTML = "";
+  splits.forEach(({ payDate, days, hours }) => {
+    // A split's natural period can itself already be finalized (an
+    // after-the-fact correction spanning into a period that's already
+    // been run) -- same "never leave a finalized date selected" rule as
+    // everywhere else, so it's bumped to the next open one instead.
+    const resolvedPayDate = finalizedPayrollDatesSet.has(payDate) ? nextOpenPayDateAfter(payDate) : payDate;
+    const row = document.createElement("div");
+    row.style.marginBottom = "10px";
+    const label = document.createElement("label");
+    label.textContent = `${formatPayDateLabel(resolvedPayDate)} — ${days.length} weekday${days.length === 1 ? "" : "s"} (${days[0]} to ${days[days.length - 1]})`
+      + (resolvedPayDate !== payDate ? ` -- ${formatPayDateLabel(payDate)} already finalized, moved here` : "");
+    label.style.display = "block";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "0.01";
+    input.min = "0";
+    input.value = hours;
+    input.className = "reqPtoSplitHours";
+    input.dataset.payDate = resolvedPayDate;
+    row.appendChild(label);
+    row.appendChild(input);
+    container.appendChild(row);
+  });
 }
 // Employee Purchase is the one request type where we don't take a free-text
 // Note -- instead we capture what was bought, the current vendor cost per
@@ -1073,13 +1223,13 @@ $("reqDate").addEventListener("change", () => {
   // Keep the end date from trailing before the start date if someone
   // changes the start after already picking an end.
   if ($("reqEndDate").value < $("reqDate").value) $("reqEndDate").value = $("reqDate").value;
-  // Re-suggest which paycheck this PTO applies to whenever the start date
-  // moves, unless we're editing an existing request (same reasoning as in
-  // updateReqDateFields).
-  if ($("reqType").value === "ptoRequests" && !editingRequestId) {
-    $("reqPtoPayrollDate").value = suggestPayPeriodFor($("reqDate").value);
-  }
+  refreshPtoScheduling();
 });
+// Added 9/9/2026 (per Guapo): the End date affects which pay period(s) a
+// PTO stretch touches just as much as the Start date does (see
+// splitWorkdaysByPayPeriod) -- there was no listener on it at all before,
+// so moving it alone never re-suggested anything.
+$("reqEndDate").addEventListener("change", refreshPtoScheduling);
 
 $("reqSubmitBtn").addEventListener("click", async () => {
   setMsg($("reqMsg"), "", "");
@@ -1097,6 +1247,12 @@ $("reqSubmitBtn").addEventListener("click", async () => {
   const units = Number($("reqUnits").value);
   const amount = isPurchase ? Math.round(costPerUnit * units * 100) / 100 : Number($("reqAmount").value);
   const targetPayrollDate = isPto ? $("reqPtoPayrollDate").value : null;
+  // Added 9/9/2026 (per Guapo): a brand-new PTO request whose range spans
+  // more than one pay period gets logged as one request PER period instead
+  // of forced onto a single paycheck -- see refreshPtoScheduling /
+  // splitWorkdaysByPayPeriod. Never true while editing an existing request
+  // (that always stays a single record -- see startEditingRequest).
+  const splitMode = isPto && !editingRequestId && currentPtoSplits.length > 1;
 
   if (!employeeName) {
     setMsg($("reqMsg"), "Choose an employee -- if the list is empty, ask Rod to add employees first.", "error");
@@ -1119,6 +1275,68 @@ $("reqSubmitBtn").addEventListener("click", async () => {
     setMsg($("reqMsg"), "Enter a note.", "error");
     return;
   }
+  if (!date || (isPto && !endDate)) {
+    setMsg($("reqMsg"), isPto ? "Pick a start and end date." : "Pick a date.", "error");
+    return;
+  }
+  if (isPto && endDate < date) {
+    setMsg($("reqMsg"), "End date can't be before the start date.", "error");
+    return;
+  }
+
+  // ---- Split mode: one PTO request per pay period the range crosses ----
+  // Always a brand-new set of records (never an edit -- see splitMode
+  // above), so this bypasses the single-record payload/addDoc path below
+  // entirely and returns on its own.
+  if (splitMode) {
+    const splitInputs = [...document.querySelectorAll("#reqPtoSplitRows .reqPtoSplitHours")];
+    const splitPayloads = [];
+    for (let i = 0; i < currentPtoSplits.length; i++) {
+      const { days } = currentPtoSplits[i];
+      const hours = Number(splitInputs[i].value);
+      // Same "PTO alone allows 0" rule as the single-record path below.
+      if (hours === null || hours === undefined || isNaN(hours) || hours < 0) {
+        setMsg($("reqMsg"), "Enter zero or more hours for each pay period below.", "error");
+        return;
+      }
+      splitPayloads.push({
+        employeeName,
+        hours,
+        date: days[0],
+        endDate: days[days.length - 1],
+        note,
+        targetPayrollDate: splitInputs[i].dataset.payDate,
+      });
+    }
+    $("reqSubmitBtn").disabled = true;
+    try {
+      for (const p of splitPayloads) {
+        await addDoc(collection(db, "ptoRequests"), {
+          employeeName: p.employeeName,
+          [info.amountField]: p.hours,
+          date: p.date,
+          endDate: p.endDate,
+          note: p.note,
+          targetPayrollDate: p.targetPayrollDate,
+          enteredBy: currentUserLabel(),
+          enteredAt: new Date().toISOString(),
+          payrollDate: null,
+          recordedAt: null,
+          recordedBy: null,
+        });
+      }
+      setMsg($("reqMsg"), `Logged as ${splitPayloads.length} separate PTO requests, one per pay period.`, "ok");
+      $("reqNote").value = "";
+      loadPayrollRequests();
+    } catch (err) {
+      setMsg($("reqMsg"), "Couldn't log it: " + err.message, "error");
+    } finally {
+      $("reqSubmitBtn").disabled = false;
+    }
+    return;
+  }
+
+  // ---- Single-record path (everything else, same as always) ----
   // PTO alone allows 0 -- added 9/7/2026 (per Guapo): the calendar is also
   // used to mark an employee's time away from work with no PTO hours
   // actually deducted (e.g. logging his own vacation on a record with no
@@ -1130,14 +1348,6 @@ $("reqSubmitBtn").addEventListener("click", async () => {
     setMsg($("reqMsg"), isPto
       ? "Enter zero or more hours."
       : `Enter a positive ${info.label.toLowerCase()}.`, "error");
-    return;
-  }
-  if (!date || (isPto && !endDate)) {
-    setMsg($("reqMsg"), isPto ? "Pick a start and end date." : "Pick a date.", "error");
-    return;
-  }
-  if (isPto && endDate < date) {
-    setMsg($("reqMsg"), "End date can't be before the start date.", "error");
     return;
   }
   if (isPto && !targetPayrollDate) {
