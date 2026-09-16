@@ -230,6 +230,7 @@ const SECTIONS = [
   { id: "employeesCard", label: "Employees", roles: ["admin"] },
   { id: "adminCard", label: "Admin", roles: ["admin"] },
   { id: "reportCard", label: "Payroll Report", roles: ["admin"] },
+  { id: "driverAdviceCard", label: "Driver Advice", roles: ["admin", "manager"] },
 ];
 let activeSectionId = null;
 
@@ -1561,7 +1562,12 @@ async function loadPayrollRequests() {
 
   // historyRows is already sorted newest-first (above), so de-duping by
   // first occurrence keeps that order -- see populateUnfinalizeDateOptions.
-  populateUnfinalizeDateOptions([...new Set(historyRows.map((r) => r.payrollDate))]);
+  const finalizedDatesNewestFirst = [...new Set(historyRows.map((r) => r.payrollDate))];
+  populateUnfinalizeDateOptions(finalizedDatesNewestFirst);
+  // Added 9/16/2026 (per Guapo): the Driver Advice tab's pay-period picker
+  // only ever needs to offer dates that were actually finalized -- same
+  // list, same reasoning, as the un-finalize picker just above.
+  populateDriverAdvicePeriodOptions(finalizedDatesNewestFirst);
 
   // Added 9/8/2026 (per Guapo): keep the "Payroll date" picker on the
   // request form in sync with which dates have actually been finalized --
@@ -1590,6 +1596,34 @@ async function loadPayrollRequests() {
 // almost always want is the obvious top choice. Called from
 // loadPayrollRequests() every time it refreshes, so this stays current
 // after any finalize, un-finalize, or void.
+// Added 9/16/2026 (per Guapo): same list/shape as populateUnfinalizeDateOptions,
+// for the Driver Advice tab's pay-period picker -- driver advice PDFs only
+// ever exist for a pay period that was actually finalized.
+function populateDriverAdvicePeriodOptions(datesNewestFirst) {
+  const sel = $("driverAdvicePeriodSelect");
+  if (!sel) return;
+  const previousValue = sel.value;
+  sel.innerHTML = "";
+  if (!datesNewestFirst.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No finalized pay dates yet";
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  datesNewestFirst.forEach((dateStr, i) => {
+    const opt = document.createElement("option");
+    opt.value = dateStr;
+    opt.textContent = formatPayDateLabel(dateStr) + (i === 0 ? "  (most recent)" : "");
+    sel.appendChild(opt);
+  });
+  if (datesNewestFirst.includes(previousValue)) {
+    sel.value = previousValue;
+  }
+}
+
 function populateUnfinalizeDateOptions(datesNewestFirst) {
   const sel = $("unfinalizeDate");
   if (!sel) return;
@@ -2012,24 +2046,109 @@ function renderReport(data) {
     drvRows.appendChild(tr);
   });
 
+  const driverAdviceWrap = $("reportDriverAdviceWrap");
+  if (data.driverAdvicePdfs && data.driverAdvicePdfs.length) {
+    renderDriverAdvicePdfList("reportDriverAdvicePdfs", data.driverAdvicePdfs);
+    show(driverAdviceWrap);
+  } else if (driverAdviceWrap) {
+    hide(driverAdviceWrap);
+  }
+
   show($("reportResults"));
 }
 
 $("downloadReportBtn").addEventListener("click", () => {
   if (!lastReportBase64) return;
-  const byteChars = atob(lastReportBase64);
+  downloadBase64File(
+    lastReportBase64,
+    lastReportFilename || "Payroll Calculation Report.xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+});
+
+// ---------- 1099 driver payment advice PDFs (added 9/16/2026, per Guapo) ----------
+// Shared by both places these show up: the "just generated" list at the
+// bottom of a finalized Payroll Report run, and the standalone Driver
+// Advice tab's re-download-later list -- same shape from both
+// generate_payroll_report (finalize=true) and get_driver_advice_pdfs.
+function downloadBase64File(base64, filename, mimeType) {
+  const byteChars = atob(base64);
   const byteNumbers = new Array(byteChars.length);
   for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
   const byteArray = new Uint8Array(byteNumbers);
-  const blob = new Blob([byteArray], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  });
+  const blob = new Blob([byteArray], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = lastReportFilename || "Payroll Calculation Report.xlsx";
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+function renderDriverAdvicePdfList(containerId, pdfs) {
+  const container = $(containerId);
+  if (!container) return;
+  container.innerHTML = "";
+  if (!pdfs || !pdfs.length) {
+    hide(container);
+    return;
+  }
+  pdfs.forEach((pdf) => {
+    const row = document.createElement("div");
+    row.className = "req-row";
+
+    const top = document.createElement("div");
+    top.className = "req-row-top";
+
+    const title = document.createElement("span");
+    title.className = "req-row-title";
+    title.textContent = pdf.name || pdf.filename;
+    top.appendChild(title);
+
+    const actions = document.createElement("span");
+    actions.className = "req-row-actions";
+    const dlBtn = document.createElement("button");
+    dlBtn.type = "button";
+    dlBtn.textContent = "Download PDF";
+    dlBtn.addEventListener("click", () => downloadBase64File(pdf.pdfBase64, pdf.filename, "application/pdf"));
+    actions.appendChild(dlBtn);
+    top.appendChild(actions);
+    row.appendChild(top);
+
+    container.appendChild(row);
+  });
+  show(container);
+}
+
+$("loadDriverAdviceBtn").addEventListener("click", async () => {
+  const payPeriodId = $("driverAdvicePeriodSelect").value;
+  if (!payPeriodId) {
+    setMsg($("driverAdviceMsg"), "Pick a finalized pay period first.", "error");
+    return;
+  }
+  $("loadDriverAdviceBtn").disabled = true;
+  setMsg($("driverAdviceMsg"), "Loading...", "");
+  hide($("driverAdviceList"));
+  try {
+    const call = httpsCallable(functions, "get_driver_advice_pdfs");
+    const res = await call({ payPeriodId });
+    const pdfs = res.data.pdfs || [];
+    renderDriverAdvicePdfList("driverAdviceList", pdfs);
+    if (!pdfs.length) {
+      setMsg(
+        $("driverAdviceMsg"),
+        "No driver advice PDFs found for that pay period -- either no driver had anything " +
+          "to report that period, or it was finalized before this feature existed (9/16/2026).",
+        ""
+      );
+    } else {
+      setMsg($("driverAdviceMsg"), "", "");
+    }
+  } catch (err) {
+    setMsg($("driverAdviceMsg"), "Couldn't load: " + err.message, "error");
+  } finally {
+    $("loadDriverAdviceBtn").disabled = false;
+  }
 });

@@ -700,6 +700,16 @@
             <tbody id="reportDriverRows"></tbody>
           </table>
         </div>
+
+        <div id="reportDriverAdviceWrap" class="hidden" style="margin-top:18px;">
+          <h2 style="font-size:14px;">Driver payment advice PDFs (just generated)</h2>
+          <div class="small" style="margin-bottom:10px;">
+            One PDF per active driver for this pay period -- same numbers as the table above.
+            Not emailed anywhere yet (that step still needs a Microsoft 365 credential GFG IT
+            hasn't set up). Also available later from the Driver Advice tab.
+          </div>
+          <div id="reportDriverAdvicePdfs" class="req-list hidden"></div>
+        </div>
       </div>
 
       <div style="margin-top:26px; padding-top:18px; border-top:1px solid var(--border);">
@@ -718,6 +728,23 @@
         <button id="unfinalizeBtn">Un-finalize this pay date</button>
         <div id="unfinalizeMsg" class="msg small"></div>
       </div>
+    </div>
+
+    <div class="card hidden" id="driverAdviceCard">
+      <h2>Driver Advice</h2>
+      <div class="small" style="margin-bottom:14px;">
+        Re-downloads the payment-advice PDFs already generated for a finalized pay period (one per
+        active 1099 driver -- Richard Haselton, Ross Pullen, Randy Pruitt), so you can print or
+        re-present them without re-running the whole Payroll Report. PDFs are generated
+        automatically the moment a period is finalized on the Payroll Report tab.
+      </div>
+      <div class="field" style="max-width:280px;">
+        <label for="driverAdvicePeriodSelect">Pay period</label>
+        <select id="driverAdvicePeriodSelect"></select>
+      </div>
+      <button id="loadDriverAdviceBtn">Load PDFs</button>
+      <div id="driverAdviceMsg" class="msg small"></div>
+      <div id="driverAdviceList" class="req-list hidden" style="margin-top:14px;"></div>
     </div>
 
   </div>

@@ -28,6 +28,7 @@ from firebase_admin import firestore
 from firebase_functions import https_fn, options, scheduler_fn
 
 import report_builder
+import driver_advice_pdf
 
 firebase_admin.initialize_app()
 
@@ -565,6 +566,47 @@ def generate_payroll_report(req: https_fn.CallableRequest):
         )
         batch.commit()
 
+    # Added 9/16/2026 (per Guapo) -- one branded PDF per active 1099
+    # driver, generated automatically at the same moment the report is
+    # finalized (the confirmed design -- see "1099 driver payment advice
+    # PDFs" in project notes). Persisted to Cloud Storage so they can be
+    # re-fetched later via get_driver_advice_pdfs, and also returned here
+    # as base64 so the front end can offer immediate download links right
+    # after finalizing without a second round trip. NOT emailed anywhere
+    # yet -- that half of the original design needs an Azure AD app
+    # registration (Microsoft Graph Mail.Send) that hasn't been set up.
+    driver_advice_pdfs = []
+    if finalize:
+        from firebase_admin import storage as fb_storage
+        bucket = fb_storage.bucket()
+        for d in summary.get("drivers", []):
+            dname = d.get("name")
+            if not dname:
+                continue
+            tips = d.get("tips", 0) or 0
+            deliveries = d.get("deliveries", 0) or 0
+            setups = d.get("setups", 0) or 0
+            days = d.get("daysDriven", 0) or 0
+            # "Active" this period -- Guapo's working definition (not yet
+            # confirmed, flagged in project notes): skip anyone with
+            # nothing to report rather than sending a $0 advice.
+            if not (tips or deliveries or setups or days):
+                continue
+            pdf_bytes = driver_advice_pdf.build_driver_advice_pdf(
+                dname, pay_period_id, tips=tips, deliveries=deliveries, setups=setups)
+            filename = driver_advice_pdf.safe_filename(dname, pay_period_id)
+            blob = bucket.blob(f"driver_advice/{pay_period_id}/{filename}")
+            # Store the real driver name as blob metadata -- safe_filename()
+            # slugifies it, so get_driver_advice_pdfs reads this back rather
+            # than trying to reverse-engineer a name from the filename.
+            blob.metadata = {"driverName": dname}
+            blob.upload_from_string(pdf_bytes, content_type="application/pdf")
+            driver_advice_pdfs.append({
+                "name": dname,
+                "filename": filename,
+                "pdfBase64": base64.b64encode(pdf_bytes).decode("ascii"),
+            })
+
     return {
         "summary": summary,
         "warnings": warnings,
@@ -572,7 +614,41 @@ def generate_payroll_report(req: https_fn.CallableRequest):
         "reportFilename": f"{pay_period_id} Payroll Calculation Report.xlsx",
         "finalized": finalize,
         "finalizedCount": finalized_count,
+        "driverAdvicePdfs": driver_advice_pdfs,
     }
+
+
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=60)
+def get_driver_advice_pdfs(req: https_fn.CallableRequest):
+    """Owner or Manager. Re-fetches the driver payment advice PDFs already
+    generated for a pay period that was finalized, from Cloud Storage --
+    so they can be downloaded/printed again later without re-running the
+    whole report. Returns an empty list (not an error) for a period that
+    was never finalized, or was finalized before this feature existed
+    (9/16/2026)."""
+    db = firestore.client()
+    _require_role(req, db, {"admin", "manager"})
+
+    data = req.data or {}
+    pay_period_id = data.get("payPeriodId")
+    if not pay_period_id:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Pick a pay period first.")
+
+    from firebase_admin import storage as fb_storage
+    bucket = fb_storage.bucket()
+    prefix = f"driver_advice/{pay_period_id}/"
+    pdfs = []
+    for blob in bucket.list_blobs(prefix=prefix):
+        if not blob.name.endswith(".pdf"):
+            continue
+        blob.reload()  # metadata isn't populated by list_blobs alone
+        pdfs.append({
+            "name": (blob.metadata or {}).get("driverName") or blob.name.rsplit("/", 1)[-1],
+            "filename": blob.name.rsplit("/", 1)[-1],
+            "pdfBase64": base64.b64encode(blob.download_as_bytes()).decode("ascii"),
+        })
+    return {"payPeriodId": pay_period_id, "pdfs": pdfs}
 
 
 @https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=60)
