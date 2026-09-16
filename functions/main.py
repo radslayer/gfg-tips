@@ -597,7 +597,23 @@ def unfinalize_payroll_date(req: https_fn.CallableRequest):
     `previouslyRecorded` rather than being overwritten with nothing. So
     there's still a durable trail of "this was finalized under X on Y,
     then reversed by Z on W," even though the request itself is pending
-    again and can be picked up by a future run."""
+    again and can be picked up by a future run.
+
+    Fixed 9/16/2026 (per Guapo): the original version only reversed the
+    four request collections, but generate_payroll_report's finalize
+    branch also unconditionally writes a w2ManDays field onto that pay
+    date's tipsPeriods doc (see the write below in this file) -- and
+    app.js's loadFinalizedTipsPeriods() treats that field's mere presence
+    as a permanent "this date was really run" signal with no code path to
+    ever clear it. Leaving it behind meant a date that got finalized by
+    mistake and then reversed here stayed stuck looking finalized to the
+    Payroll-date picker forever, even though the report itself correctly
+    showed it as open again -- exactly what happened to 2026-09-25 after
+    the incident described above, blocking new PTO/etc. requests from
+    targeting it. Now also clears that field (preserving its prior value
+    under previouslyRecordedW2ManDays, same never-silently-erase pattern
+    as the four request collections) whenever it's present, so an
+    unfinalize is symmetric with what finalize actually wrote."""
     db = firestore.client()
     _require_role(req, db, {"admin"})
 
@@ -634,11 +650,32 @@ def unfinalize_payroll_date(req: https_fn.CallableRequest):
         if ids:
             reversed_by_collection[coll_name] = ids
 
+    # Fixed 9/16/2026 (per Guapo) -- see the docstring above. A finalize
+    # also stamps w2ManDays onto this pay date's tipsPeriods doc; undo
+    # that too so the Payroll-date picker's finalized-date check (which
+    # keys off that field's mere presence, see app.js) doesn't keep
+    # treating this date as finalized after it's been reversed here.
+    tips_period_w2_cleared = False
+    tips_period_ref = db.collection("tipsPeriods").document(payroll_date)
+    tips_period_snap = tips_period_ref.get()
+    if tips_period_snap.exists and "w2ManDays" in (tips_period_snap.to_dict() or {}):
+        batch.update(tips_period_ref, {
+            "w2ManDays": firestore.DELETE_FIELD,
+            "unfinalizedAt": now,
+            "unfinalizedBy": who,
+            "previouslyRecordedW2ManDays": tips_period_snap.to_dict().get("w2ManDays"),
+        })
+        tips_period_w2_cleared = True
+
     reversed_count = sum(len(v) for v in reversed_by_collection.values())
-    if reversed_count:
+    if reversed_count or tips_period_w2_cleared:
         batch.commit()
 
-    return {"reversedCount": reversed_count, "byCollection": reversed_by_collection}
+    return {
+        "reversedCount": reversed_count,
+        "byCollection": reversed_by_collection,
+        "tipsPeriodW2Cleared": tips_period_w2_cleared,
+    }
 
 
 @scheduler_fn.on_schedule(schedule="0 3 1 * *", timezone="America/Denver",
