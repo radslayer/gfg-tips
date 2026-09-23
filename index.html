@@ -484,6 +484,7 @@
       <div id="ptoCalendar" class="pto-calendar"></div>
 
       <h2 style="margin-top:24px;">Pending (not yet on a payroll run)</h2>
+      <div id="pendingAlerts" class="msg error"></div>
       <div class="req-list" id="pendingRows"></div>
 
       <h2 style="margin-top:24px;">History (already on a payroll run)</h2>
@@ -681,6 +682,11 @@
         distribution. Either way, every currently-pending PTO/purchase/
         delivery/reimbursement request due this period is swept in.
       </div>
+      <div id="savedReportWrap" class="hidden" style="margin-bottom:16px;">
+        <button type="button" id="fetchSavedReportBtn">Download previously finalized report (.xlsx)</button>
+        <div id="savedReportMsg" class="msg"></div>
+      </div>
+
       <div class="field">
         <label for="reportCsvFile">Raw timeclock export (Transaction Report .csv)</label>
         <input type="file" id="reportCsvFile" accept=".csv" />

@@ -598,6 +598,21 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     if finalize:
         from firebase_admin import storage as fb_storage
         bucket = fb_storage.bucket()
+
+        # Added 9/23/2026 (per Guapo) -- the report workbook itself was only
+        # ever returned in the response (reportBase64/lastReportBase64 in
+        # app.js), never saved anywhere, so leaving the Payroll Report tab
+        # without downloading meant it was gone for good -- the only way
+        # back was un-finalize + regenerate, which does NOT reproduce the
+        # original numbers (every request it already consumed now reads as
+        # $0/0 hrs pending). Persisted here the same way driver advice PDFs
+        # already are, just below, so get_payroll_report can re-fetch it.
+        report_filename = f"{pay_period_id} Payroll Calculation Report.xlsx"
+        bucket.blob(f"reports/{pay_period_id}/{report_filename}").upload_from_string(
+            wb_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
         for d in summary.get("drivers", []):
             dname = d.get("name")
             if not dname:
@@ -668,6 +683,42 @@ def get_driver_advice_pdfs(req: https_fn.CallableRequest):
             "pdfBase64": base64.b64encode(blob.download_as_bytes()).decode("ascii"),
         })
     return {"payPeriodId": pay_period_id, "pdfs": pdfs}
+
+
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=60)
+def get_payroll_report(req: https_fn.CallableRequest):
+    """Owner-only, same as generate_payroll_report -- the workbook carries
+    wage rates. Re-fetches the report workbook already generated and
+    finalized for a pay period, from Cloud Storage, so it can be downloaded
+    again later without re-running the whole calculation -- re-running does
+    NOT reproduce the original numbers, since every request that run already
+    consumed (PTO/purchases/misc) is now stamped and reads as $0/0 hrs
+    pending. Returns found=false (not an error) for a period that was never
+    finalized, or was finalized before this feature existed (9/23/2026) --
+    those still have no saved copy; the only way to see those historical
+    numbers again is un-finalize + regenerate, same as before this existed."""
+    db = firestore.client()
+    _require_role(req, db, {"admin"})
+
+    data = req.data or {}
+    pay_period_id = data.get("payPeriodId")
+    if not pay_period_id:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Pick a pay period first.")
+
+    from firebase_admin import storage as fb_storage
+    bucket = fb_storage.bucket()
+    prefix = f"reports/{pay_period_id}/"
+    blobs = [b for b in bucket.list_blobs(prefix=prefix) if b.name.endswith(".xlsx")]
+    if not blobs:
+        return {"found": False, "payPeriodId": pay_period_id}
+    blob = blobs[0]
+    return {
+        "found": True,
+        "payPeriodId": pay_period_id,
+        "reportBase64": base64.b64encode(blob.download_as_bytes()).decode("ascii"),
+        "reportFilename": blob.name.rsplit("/", 1)[-1],
+    }
 
 
 @https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=60)

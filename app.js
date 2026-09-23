@@ -602,6 +602,21 @@ function renderPeriodStatus() {
   $("periodStatus").innerHTML = "";
   $("periodStatus").appendChild(pill);
   $("periodStatus").appendChild(tipPill);
+
+  // Added 9/23/2026 (per Guapo): only offer "download the saved report"
+  // once a period is actually submitted -- generate_payroll_report only
+  // persists a copy to Cloud Storage on finalize (see main.py), so there's
+  // nothing to fetch for an open/draft period anyway. Clears any leftover
+  // message from a previous period's fetch attempt when you switch dates.
+  const savedWrap = $("savedReportWrap");
+  if (savedWrap) {
+    if (currentPeriodStatus === "submitted") {
+      show(savedWrap);
+    } else {
+      hide(savedWrap);
+    }
+    setMsg($("savedReportMsg"), "", "");
+  }
 }
 
 // Shows the tip-pool revenue fields (and the driver tip-split recap) only
@@ -1666,6 +1681,45 @@ async function loadPayrollRequests() {
     ...finalizedFromTipsPeriods,
   ]);
   populateReqPtoPayrollDateOptions();
+  renderPendingAlerts(pendingRows, finalizedPayrollDatesSet);
+}
+
+// Added 9/23/2026 (per Guapo): a pending PTO request whose targetPayrollDate
+// is already finalized will NEVER get swept in automatically -- the report
+// only ever pulls PTO scheduled for the exact pay_period_id it's running
+// (see main.py's generate_payroll_report), so once that date is finalized,
+// a leftover/unresolved PTO request just sits here silently forever unless
+// someone notices. Same idea for any of the four request types logged
+// against a name that isn't in the current employee list -- those get
+// excluded from every report run (see report_builder.sum_by_employee), with
+// only a warning banner at report-generation time, easy to miss if no one's
+// actively running a report that moment. This surfaces both cases right on
+// the Payroll Requests tab itself, on every refresh -- called from the end
+// of loadPayrollRequests() above.
+function renderPendingAlerts(pendingRows, finalizedDates) {
+  const el = $("pendingAlerts");
+  if (!el) return;
+  const knownNames = new Set(employeesCache.map((e) => e.name));
+  const lines = [];
+  pendingRows.forEach((r) => {
+    if (r.type === "ptoRequests" && r.targetPayrollDate && finalizedDates.has(r.targetPayrollDate)) {
+      lines.push(
+        `PTO — ${r.employeeName} (${(Number(r.amount) || 0).toFixed(2)} hrs, ${formatShortDate(r.date)}) ` +
+        `targets ${formatPayDateLabel(r.targetPayrollDate)}, which is already finalized -- it will NOT ` +
+        `be picked up automatically. Edit it to an open payroll date, or unfinalize that period.`
+      );
+    }
+    // employeesCache can be momentarily empty on first load (loadEmployees()
+    // and loadPayrollRequests() run concurrently, not awaited in order) --
+    // skip this half of the check rather than false-flag every row.
+    if (knownNames.size && !knownNames.has(r.employeeName)) {
+      lines.push(
+        `${REQ_TYPE_DISPLAY[r.type]} — ${r.employeeName} isn't in the current employee list, so it ` +
+        `will be excluded from every report until the name is fixed.`
+      );
+    }
+  });
+  el.textContent = lines.join(" ");
 }
 
 // Added 9/8/2026 (per Guapo): a free-pick calendar let you "un-finalize"
@@ -2167,6 +2221,47 @@ $("downloadReportBtn").addEventListener("click", () => {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   );
 });
+
+// Added 9/23/2026 (per Guapo): re-fetches the workbook saved to Cloud
+// Storage at finalize time (see main.py's generate_payroll_report /
+// get_payroll_report) -- for grabbing a copy of an already-submitted
+// period's report after leaving the page, without re-running the whole
+// calculation (which would NOT reproduce the original numbers, since
+// every request that run consumed is now stamped and reads as $0/0 hrs
+// pending). Not available for a period finalized before this feature
+// existed (9/23/2026) -- found:false means no saved copy exists, and
+// un-finalize + regenerate is the only way to see those older numbers.
+const fetchSavedBtn = $("fetchSavedReportBtn");
+if (fetchSavedBtn) {
+  fetchSavedBtn.addEventListener("click", async () => {
+    if (!currentPeriodId) return;
+    fetchSavedBtn.disabled = true;
+    setMsg($("savedReportMsg"), "Looking for a saved copy...", "");
+    try {
+      const call = httpsCallable(functions, "get_payroll_report");
+      const res = await call({ payPeriodId: currentPeriodId });
+      if (res.data.found) {
+        downloadBase64File(
+          res.data.reportBase64,
+          res.data.reportFilename || `${currentPeriodId} Payroll Calculation Report.xlsx`,
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        setMsg($("savedReportMsg"), "Downloaded.", "ok");
+      } else {
+        setMsg(
+          $("savedReportMsg"),
+          "No saved copy on file for this period -- it was likely finalized before this feature " +
+          "existed (9/23/2026). Un-finalize and regenerate if you need those numbers again.",
+          "error"
+        );
+      }
+    } catch (err) {
+      setMsg($("savedReportMsg"), "Couldn't fetch the saved report: " + err.message, "error");
+    } finally {
+      fetchSavedBtn.disabled = false;
+    }
+  });
+}
 
 // ---------- 1099 driver payment advice PDFs (added 9/16/2026, per Guapo) ----------
 // Shared by both places these show up: the "just generated" list at the
