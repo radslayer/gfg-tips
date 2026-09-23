@@ -583,6 +583,35 @@
         </table>
       </div>
 
+      <h2 style="margin-top:28px;">Contract Labor (1099s)</h2>
+      <div class="small" style="margin-bottom:10px;">
+        For someone who punches the timeclock but is paid as a 1099 contractor
+        for that work, not a W2 wage -- add their name (exactly as it appears
+        on the timeclock) and rate here. Their hours AND wages (rate x hours,
+        with the same 1.5x overtime premium a W2 employee gets over 40
+        hrs/week) are pulled onto a separate "Contract Labor (1099s) Recap"
+        sheet on the report -- same treatment as the 1099 drivers otherwise --
+        never folded into the wage-based ADP Entry sheet.
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="contractLaborName">Name (as it appears on the timeclock)</label>
+          <input type="text" id="contractLaborName" placeholder="e.g. Emory Ledinh" />
+        </div>
+        <div class="field">
+          <label for="contractLaborRate">Hourly rate</label>
+          <input type="number" step="0.01" id="contractLaborRate" placeholder="Leave blank until known" />
+        </div>
+      </div>
+      <button id="contractLaborSaveBtn">Save contract laborer</button>
+      <div id="contractLaborMsg" class="msg"></div>
+      <div class="table-wrap" style="margin-top:16px;">
+        <table>
+          <thead><tr><th>Name</th><th>Rate</th><th></th><th></th></tr></thead>
+          <tbody id="contractLaborRows"></tbody>
+        </table>
+      </div>
+
     </div>
 
     <div class="card hidden" id="adminCard">
@@ -698,6 +727,23 @@
               </tr>
             </thead>
             <tbody id="reportDriverRows"></tbody>
+          </table>
+        </div>
+
+        <h2 style="margin-top:18px;">Contract Labor (1099s)</h2>
+        <div class="small" style="margin-bottom:10px;">
+          Hours and pay for people paid as 1099 contract labor for this work, not a W2
+          wage (added via the Employees tab's Contract Labor roster) -- same treatment
+          as the 1099 drivers otherwise. Pay $ = Rate x Regular Hours + Rate x Overtime
+          Hours x 1.5 (same OT premium a W2 employee gets), blank if no rate is on file
+          yet. Not part of ADP Entry.
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Rate</th><th>Reg Hrs</th><th>OT Hrs</th><th>Man-Days</th><th>Pay $</th></tr>
+            </thead>
+            <tbody id="reportContractLaborRows"></tbody>
           </table>
         </div>
 

@@ -134,6 +134,15 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Contract labor roster (added 9/23/2026, per Guapo): which timeclock
+    // names are paid as 1099 contract labor for that work, not a W2 wage.
+    // Owner-only, same treatment as sisterCompanyAliases -- config, not a
+    // payroll record, so it can be edited or removed.
+    match /contractLabor/{id} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
     match /ptoRequests/{id} {
       allow read: if isAdmin() || isManager();
       allow create: if canLogPayrollRequests() && unrecordedCreate();

@@ -467,6 +467,7 @@ onAuthStateChanged(auth, async (user) => {
     loadEmployees();
     loadPayrollRequests();
     loadSisterAliases();
+    loadContractLabor();
     loadUserRoles();
   } else if (currentRole === "manager") {
     loadEmployees();
@@ -1094,6 +1095,84 @@ $("aliasSaveBtn").addEventListener("click", async () => {
     loadSisterAliases();
   } catch (err) {
     setMsg($("aliasMsg"), "Save failed: " + err.message, "error");
+  }
+});
+
+// ---------- Contract Labor (1099s) ----------
+// Added 9/23/2026 (per Guapo): someone who punches the clock but is paid
+// as a 1099 contractor for that work, not a W2 wage. Same idea as
+// sister-company aliases (a small Owner-maintained roster of known
+// timeclock names needing special handling) but simpler -- there's no
+// canonical employee to fold hours into; their hours just get pulled onto
+// their own "Contract Labor (1099s) Recap" sheet on the report, same
+// treatment as the 1099 drivers, never into the wage-based ADP Entry sheet.
+let contractLaborCache = [];
+
+async function loadContractLabor() {
+  const snap = await getDocs(collection(db, "contractLabor"));
+  contractLaborCache = [];
+  snap.forEach((d) => contractLaborCache.push({ id: d.id, ...d.data() }));
+  renderContractLaborRows();
+}
+
+function renderContractLaborRows() {
+  const tbody = $("contractLaborRows");
+  tbody.innerHTML = "";
+  contractLaborCache.forEach((c) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${c.name}</td><td>${c.rate != null ? Number(c.rate).toFixed(2) : ""}</td>`;
+
+    const editTd = document.createElement("td");
+    const editBtn = document.createElement("button");
+    editBtn.className = "link";
+    editBtn.type = "button";
+    editBtn.textContent = "edit";
+    editBtn.addEventListener("click", () => {
+      $("contractLaborName").value = c.name;
+      $("contractLaborRate").value = c.rate != null ? c.rate : "";
+      $("contractLaborName").scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    editTd.appendChild(editBtn);
+    tr.appendChild(editTd);
+
+    const removeTd = document.createElement("td");
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "link";
+    removeBtn.type = "button";
+    removeBtn.textContent = "remove";
+    removeBtn.addEventListener("click", async () => {
+      try {
+        await deleteDoc(doc(db, "contractLabor", c.id));
+        loadContractLabor();
+      } catch (err) {
+        setMsg($("contractLaborMsg"), "Couldn't remove it: " + err.message, "error");
+      }
+    });
+    removeTd.appendChild(removeBtn);
+    tr.appendChild(removeTd);
+    tbody.appendChild(tr);
+  });
+}
+
+$("contractLaborSaveBtn").addEventListener("click", async () => {
+  setMsg($("contractLaborMsg"), "", "");
+  const name = $("contractLaborName").value.trim();
+  const rateRaw = $("contractLaborRate").value;
+  if (!name) {
+    setMsg($("contractLaborMsg"), "Enter the name exactly as it appears on the timeclock.", "error");
+    return;
+  }
+  try {
+    await setDoc(doc(db, "contractLabor", name), {
+      name,
+      rate: rateRaw !== "" ? Number(rateRaw) : null,
+    });
+    setMsg($("contractLaborMsg"), "Saved.", "ok");
+    $("contractLaborName").value = "";
+    $("contractLaborRate").value = "";
+    loadContractLabor();
+  } catch (err) {
+    setMsg($("contractLaborMsg"), "Save failed: " + err.message, "error");
   }
 });
 
@@ -1991,6 +2070,17 @@ function renderUnknownTimeclockNames(names) {
     });
     actions.appendChild(addAliasBtn);
 
+    const addContractBtn = document.createElement("button");
+    addContractBtn.type = "button";
+    addContractBtn.textContent = "Add as Contract Labor";
+    addContractBtn.addEventListener("click", () => {
+      showSection("employeesCard");
+      $("contractLaborName").value = name;
+      $("contractLaborName").scrollIntoView({ behavior: "smooth", block: "center" });
+      $("contractLaborName").focus();
+    });
+    actions.appendChild(addContractBtn);
+
     top.appendChild(actions);
     row.appendChild(top);
 
@@ -2044,6 +2134,18 @@ function renderReport(data) {
       <td>${money(recapTotal)}</td>
     `;
     drvRows.appendChild(tr);
+  });
+
+  const clRows = $("reportContractLaborRows");
+  clRows.innerHTML = "";
+  (summary.contractLabor || []).forEach((c) => {
+    const tr = document.createElement("tr");
+    const fmt = (v) => (v === null || v === undefined ? "" : Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    tr.innerHTML = `
+      <td>${c.name}</td><td>${fmt(c.rate)}</td><td>${fmt(c.regularHours)}</td>
+      <td>${fmt(c.otHours)}</td><td>${fmt(c.manDays)}</td><td>${fmt(c.pay)}</td>
+    `;
+    clRows.appendChild(tr);
   });
 
   const driverAdviceWrap = $("reportDriverAdviceWrap");

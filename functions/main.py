@@ -109,6 +109,23 @@ def _load_sister_map_from_firestore(db):
     return sister_map
 
 
+def _load_contract_labor_from_firestore(db):
+    """Returns dict name -> rate (rate may be None if not yet set) from
+    the `contractLabor` collection (Owner-maintained via the Employees
+    tab, added 9/23/2026 per Guapo; rate added same day per Guapo --
+    "include their wage") -- people who punch the timeclock but are paid
+    as 1099 contract labor for that work, not a W2 wage. Empty dict if
+    none on file -- report_builder treats that as "nothing to pull out,"
+    same as no sister aliases."""
+    contract_labor = {}
+    for doc in db.collection("contractLabor").stream():
+        d = doc.to_dict()
+        name = d.get("name")
+        if name:
+            contract_labor[name] = d.get("rate")
+    return contract_labor
+
+
 # Read off the 8/28/2026 ADP Payroll Summary Guapo provided on 9/7/2026 --
 # ADP's own "Last, First" text, exactly as printed on that report. Several
 # of these differ from the everyday name already on file (a compound
@@ -487,6 +504,7 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             prior_w2_man_days = prior_data.get("w2ManDays") or {}
 
     sister_map = _load_sister_map_from_firestore(db)
+    contract_labor = _load_contract_labor_from_firestore(db)
 
     pending = {}
     for coll_name in _REQUEST_COLLECTIONS:
@@ -536,6 +554,7 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             sister_map=sister_map,
             prior_driver_info=prior_driver_info,
             prior_w2_man_days=prior_w2_man_days,
+            contract_labor=contract_labor,
         )
     except report_builder.ReportError as e:
         raise https_fn.HttpsError(https_fn.FunctionsErrorCode.INVALID_ARGUMENT, str(e))
@@ -766,7 +785,7 @@ def backup_payroll_data(event) -> None:
     from firebase_admin import storage as fb_storage
 
     db = firestore.client()
-    collections = ["employees", "tipsPeriods", "roles", "sisterCompanyAliases"] + list(_REQUEST_COLLECTIONS)
+    collections = ["employees", "tipsPeriods", "roles", "sisterCompanyAliases", "contractLabor"] + list(_REQUEST_COLLECTIONS)
     dump = {}
     for coll_name in collections:
         dump[coll_name] = [

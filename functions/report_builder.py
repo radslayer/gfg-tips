@@ -421,6 +421,74 @@ def compute_hours_and_wages(records, employees):
     return results, unknown, all_dates
 
 
+def compute_contract_labor_hours(records, contract_labor):
+    """Hours (and wages) for people who punch the timeclock but are paid
+    as 1099 contract labor for that work, not a W2 wage (per the
+    Employees tab's Contract Labor roster -- `contractLabor` Firestore
+    collection).
+
+    Added 9/23/2026 (per Guapo), rate/wages added same day (per Guapo --
+    "include their wage"): same per-day/per-week basis as
+    compute_hours_and_wages (breaks included via BREAKS_TABLE, OT split at
+    40 hrs/week and paid at OT_MULTIPLIER same as a W2 employee, man-days
+    via man_days_for_hours) so the numbers -- and the OT premium -- are
+    apples-to-apples with a W2 employee's. Still never part of ADP Entry
+    (1099s aren't payroll) -- see the "Contract Labor (1099s) Recap" sheet.
+
+    contract_labor: dict name -> rate (rate may be None if not yet set on
+    the Employees tab -- that person's hours/man-days are still computed
+    and shown, but wages is None and build_report flags it, same idea as
+    an employee with no rate on file). Returns dict name -> {regular_hours,
+    ot_hours, man_days, rate, wages} for only the names that actually
+    punched this period -- someone on the roster with no punches this
+    period is simply left out, same as an employee with no hours.
+    """
+    contract_labor = dict(contract_labor or {})
+    if not contract_labor:
+        return {}
+
+    daily_hours = defaultdict(float)
+    daily_count = defaultdict(int)
+    for name, date, amt in records:
+        if name not in contract_labor:
+            continue
+        daily_hours[(name, date)] += amt
+        daily_count[(name, date)] += 1
+
+    all_dates = sorted({d for (_, d) in daily_hours.keys()})
+    results = {}
+    for name, rate in contract_labor.items():
+        keys = [(name, d) for d in all_dates if (name, d) in daily_hours]
+        if not keys:
+            continue
+        week_punched = defaultdict(float)
+        week_break = defaultdict(float)
+        for key in keys:
+            _, date = key
+            wk = week_start(date)
+            week_punched[wk] += daily_hours[key]
+            if daily_count[key] > 2:
+                week_break[wk] += break_minutes_for_hours(daily_hours[key]) / 60.0
+        regular_total = ot_total = wages_total = 0.0
+        for wk in week_punched:
+            paid_basis = week_punched[wk] + week_break[wk]
+            reg = min(paid_basis, OT_THRESHOLD_HOURS)
+            ot = max(paid_basis - OT_THRESHOLD_HOURS, 0.0)
+            regular_total += reg
+            ot_total += ot
+            if rate is not None:
+                wages_total += rate * reg + OT_MULTIPLIER * rate * ot
+        man_days_total = sum(man_days_for_hours(daily_hours[key]) for key in keys)
+        results[name] = {
+            "regular_hours": round(regular_total, 4),
+            "ot_hours": round(ot_total, 4),
+            "man_days": round(man_days_total, 2),
+            "rate": rate,
+            "wages": round(wages_total, 2) if rate is not None else None,
+        }
+    return results
+
+
 def allocate_tips_with_drivers(w2_days, employees, net_pool, driver_days):
     """w2_days / driver_days: dict name -> days for the tip split -- on a
     tip payout week this is already the 4-week combination (this period +
@@ -486,7 +554,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                   total_tip_revenue, bonnie_brae, swift, driver_info,
                   pending_pto, pending_purchases, pending_misc_amt,
                   pending_misc_reimb, sister_map=None, prior_driver_info=None,
-                  prior_w2_man_days=None):
+                  prior_w2_man_days=None, contract_labor=None):
     """employees/order: same shape as before (dict name -> {department,
     rate, tip_eligible}, plus the name order list).
 
@@ -539,6 +607,21 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     main.py can stamp them processed -- but only if the caller chooses
     to finalize (see main.py).
 
+    contract_labor: dict timeclock name -> hourly rate (rate may be None
+    if not yet set on the Employees tab), from the `contractLabor`
+    Firestore collection (Owner-maintained via the Employees tab) --
+    people who punch the clock but are paid as 1099 contract labor for
+    that work, not a W2 wage. Their hours AND wages (rate x Regular Hours,
+    plus the same 1.5x OT premium over 40 hrs/week a W2 employee gets) are
+    pulled onto their own "Contract Labor (1099s) Recap" sheet -- same
+    treatment as the 1099 drivers otherwise (never part of ADP Entry,
+    since 1099s aren't payroll) -- and they're excluded from the "no wage
+    rate on file" warning, since that warning means something different
+    (a name nobody's told this app about yet) than "not on payroll on
+    purpose." A contract laborer with no rate set yet still gets their
+    own separate warning (see rate_missing below) rather than a silently
+    blank/wrong Pay $.
+
     Returns (workbook_bytes, summary, warnings, consumed_ids) where
     consumed_ids is {"ptoRequests": [id, ...], "employeePurchases": [...],
     "miscAmounts": [...], "miscReimbursements": [...]}.
@@ -558,10 +641,28 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     earnout_pivot = build_earnout_pivot(original_records, sister_map)
 
     computed, unknown_names, all_dates = compute_hours_and_wages(records, employees)
+    # Added 9/23/2026 (per Guapo): a name on the Contract Labor roster is
+    # deliberately not a wage employee -- pull it out of the "no wage rate
+    # on file" bucket (that warning is for names nobody's told this app
+    # about yet) and compute its hours/wages separately instead, for the
+    # Contract Labor (1099s) Recap sheet below.
+    contract_labor = dict(contract_labor or {})
+    contract_labor_hours = compute_contract_labor_hours(records, contract_labor)
+    unknown_names = [n for n in unknown_names if n not in contract_labor]
     if unknown_names:
         warnings.append(
             "These names appear in the timeclock export but have no wage rate "
             "on file, so their hours are not in this report: " + ", ".join(unknown_names)
+        )
+    contract_labor_rate_missing = sorted(
+        name for name, info in contract_labor_hours.items() if info.get("rate") is None
+    )
+    if contract_labor_rate_missing:
+        warnings.append(
+            "These Contract Labor names have no hourly rate on file, so Pay $ is "
+            "blank for them on the Contract Labor (1099s) Recap sheet: " +
+            ", ".join(contract_labor_rate_missing) + ". Set a rate for them on the "
+            "Employees tab."
         )
 
     # Added 9/7/2026 (per Guapo): flag disparities instead of hiding them.
@@ -1146,6 +1247,70 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             ws7.cell(row=row, column=cc).fill = TOTALS_FILL
         autosize(ws7)
 
+    # Added 9/23/2026 (per Guapo): Contract Labor gets the same treatment
+    # as the 1099 drivers above -- its own recap sheet, outside ADP Entry.
+    # Rate/wages added same day (per Guapo -- "include their wage"): Pay $
+    # is a live formula (Rate x Regular Hours, plus the same 1.5x OT
+    # premium a W2 employee gets on hours over 40/week), not a manual-entry
+    # cell like the drivers' Deliveries $/Setups $ -- this app DOES know
+    # their rate (set on the Employees tab) and DOES see their hours (they
+    # punch the timeclock), unlike a driver. Someone with no rate on file
+    # yet gets blank Rate/Pay $ cells plus the contract_labor_rate_missing
+    # warning above, rather than a silently wrong $0.
+    if contract_labor_hours:
+        ws8 = wb.create_sheet("Contract Labor (1099s) Recap")
+        r8 = title_block(ws8, "Contract Labor (1099s) Recap", [
+            "For timeclock punches from people paid as 1099 contract labor for this work, not a",
+            "W2 wage (added via the Employees tab's Contract Labor roster).",
+            "Regular Hours/Overtime Hours/Man-Days are computed the same way as a W2 employee's",
+            "(breaks included, OT split at 40 hrs/week) so they're apples-to-apples.",
+            "Pay $ = Rate x Regular Hours + Rate x Overtime Hours x 1.5 -- same OT premium a W2",
+            "employee gets, just outside ADP. Blank Rate/Pay $ means no rate is on file yet --",
+            "set one on the Employees tab.",
+            "Not part of ADP Entry (1099s aren't payroll).",
+        ])
+        headers = ["Name", "Rate", "Regular Hours", "Overtime Hours", "Man-Days", "Pay $"]
+        for i, h in enumerate(headers, start=1):
+            ws8.cell(row=r8, column=i, value=h)
+        style_header(ws8, r8, len(headers))
+        row = r8 + 1
+        cl_first_row = row
+        for cname in sorted(contract_labor_hours):
+            info = contract_labor_hours[cname]
+            rate = info.get("rate")
+            ws8.cell(row=row, column=1, value=cname).font = INPUT_FONT
+            if rate is not None:
+                c = ws8.cell(row=row, column=2, value=rate)
+                c.font = INPUT_FONT
+                c.number_format = "$#,##0.00"
+            c = ws8.cell(row=row, column=3, value=info["regular_hours"])
+            c.font = FORMULA_FONT
+            c = ws8.cell(row=row, column=4, value=info["ot_hours"])
+            c.font = FORMULA_FONT
+            c = ws8.cell(row=row, column=5, value=info["man_days"])
+            c.font = FORMULA_FONT
+            if rate is not None:
+                pay_f = f"=B{row}*C{row}+B{row}*D{row}*{OT_MULTIPLIER}"
+                c = ws8.cell(row=row, column=6, value=pay_f)
+                c.font = FORMULA_FONT
+                c.number_format = "$#,##0.00"
+            for cc in range(1, len(headers) + 1):
+                ws8.cell(row=row, column=cc).border = THIN
+            row += 1
+        cl_last_row = row - 1
+        ws8.cell(row=row, column=1, value="Totals").font = BOLD_FONT
+        for cc in (3, 4, 5, 6):
+            col_letter = get_column_letter(cc)
+            c = ws8.cell(row=row, column=cc,
+                         value=f"=SUM({col_letter}{cl_first_row}:{col_letter}{cl_last_row})")
+            c.font = BOLD_FONT
+            if cc == 6:
+                c.number_format = "$#,##0.00"
+        for cc in range(1, len(headers) + 1):
+            ws8.cell(row=row, column=cc).border = THIN
+            ws8.cell(row=row, column=cc).fill = TOTALS_FILL
+        autosize(ws8)
+
     # --- Earnout pivot: mirrors Rod's reference exactly -- a "Sum of amt"
     # style pivot (dates as columns) filtered down to just the alias and
     # real-name rows for each employee with a sister-company split, with a
@@ -1250,6 +1415,17 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 "setups": driver_info.get(dname, {}).get("setups", 0),
             }
             for dname, ddays in driver_days_for_tips.items()
+        ],
+        "contractLabor": [
+            {
+                "name": cname,
+                "rate": info.get("rate"),
+                "regularHours": info["regular_hours"],
+                "otHours": info["ot_hours"],
+                "manDays": info["man_days"],
+                "pay": info.get("wages"),
+            }
+            for cname, info in sorted(contract_labor_hours.items())
         ],
         "isTipWeek": tip_week,
         # THIS period's own man-days only (never the combined figure above)
