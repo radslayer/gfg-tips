@@ -433,7 +433,8 @@ def compute_contract_labor_hours(records, contract_labor):
     40 hrs/week and paid at OT_MULTIPLIER same as a W2 employee, man-days
     via man_days_for_hours) so the numbers -- and the OT premium -- are
     apples-to-apples with a W2 employee's. Still never part of ADP Entry
-    (1099s aren't payroll) -- see the "Contract Labor (1099s) Recap" sheet.
+    (1099s aren't payroll) -- see the "Contract Labor (1099s) Recap" section of the
+    "Contractors Payments" sheet.
 
     contract_labor: dict name -> rate (rate may be None if not yet set on
     the Employees tab -- that person's hours/man-days are still computed
@@ -561,7 +562,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     driver_info: dict driver_name -> {"days": <days driven, flat 1.0/day
     credit>, "deliveries": <$>, "setups": <$>} -- entered by Larry (or a
     Manager backing him up) on the Tip Pool tab, for THIS pay period.
-    "deliveries"/"setups" feed the "Driver Payroll (1099s) Recap" sheet
+    "deliveries"/"setups" feed the "Driver Payroll (1099s) Recap" section of the
+    "Contractors Payments" sheet
     and are always THIS period's own dollar totals only (drivers get paid
     those every period, tip week or not). "days" feeds the tip-pool
     payout, but ONLY on a tip week (is_tip_week(pay_date)) -- and even
@@ -613,7 +615,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     people who punch the clock but are paid as 1099 contract labor for
     that work, not a W2 wage. Their hours AND wages (rate x Regular Hours,
     plus the same 1.5x OT premium over 40 hrs/week a W2 employee gets) are
-    pulled onto their own "Contract Labor (1099s) Recap" sheet -- same
+    pulled onto the "Contract Labor (1099s) Recap" section of the "Contractors
+    Payments" sheet -- same
     treatment as the 1099 drivers otherwise (never part of ADP Entry,
     since 1099s aren't payroll) -- and they're excluded from the "no wage
     rate on file" warning, since that warning means something different
@@ -666,7 +669,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     # deliberately not a wage employee -- pull it out of the "no wage rate
     # on file" bucket (that warning is for names nobody's told this app
     # about yet) and compute its hours/wages separately instead, for the
-    # Contract Labor (1099s) Recap sheet below.
+    # Contract Labor (1099s) Recap section of the Contractors Payments sheet below.
     contract_labor = dict(contract_labor or {})
     contract_labor_hours = compute_contract_labor_hours(records, contract_labor)
     unknown_names = [n for n in unknown_names if n not in contract_labor]
@@ -681,7 +684,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     if contract_labor_rate_missing:
         warnings.append(
             "These Contract Labor names have no hourly rate on file, so Pay $ is "
-            "blank for them on the Contract Labor (1099s) Recap sheet: " +
+            "blank for them on the Contract Labor (1099s) Recap section of the "
+            "Contractors Payments sheet: " +
             ", ".join(contract_labor_rate_missing) + ". Set a rate for them on the "
             "Employees tab."
         )
@@ -1222,115 +1226,138 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             row += 1
         autosize(ws6)
 
-    if driver_info:
-        ws7 = wb.create_sheet("Driver Payroll (1099s) Recap")
-        r7 = title_block(ws7, "Driver Payroll (1099s) Recap", [
-            "Deliveries $ Total and Setups $ Total are NOT counts -- different deliveries/setups pay",
-            "different amounts, so each is the driver's own already-added-up dollar total for the period",
-            "(entered on the Tip Pool tab, same as the old Driver Payroll workbook).",
-            "Tips is NOT entered by Larry -- it's pulled from " + TIPS_SHEET + " (the same tip-pool payout",
-            "shown on the Driver Tip Payouts sheet), since that figure only exists once the tip-pool math runs.",
-            "Not part of ADP Entry (1099s aren't payroll).",
-            "Total = Tips + Deliveries $ Total + Setups $ Total (computed here, not separately entered).",
-        ])
-        for i, h in enumerate(["Driver", "Tips", "Deliveries $ Total", "Setups $ Total", "Total"], start=1):
-            ws7.cell(row=r7, column=i, value=h)
-        style_header(ws7, r7, 5)
-        row = r7 + 1
-        recap_first_row = row
-        for dname, info in driver_info.items():
-            ws7.cell(row=row, column=1, value=dname).font = INPUT_FONT
-            tips_f = f'=VLOOKUP(A{row},{TIPS_SHEET}!$A${drv_rows_start}:$G${drv_rows_end},7,FALSE)'
-            c = ws7.cell(row=row, column=2, value=tips_f)
-            c.font = FORMULA_FONT
-            c.number_format = "$#,##0.00"
-            for cc, field in ((3, "deliveries"), (4, "setups")):
-                c = ws7.cell(row=row, column=cc, value=info.get(field, 0) or 0)
-                c.font = INPUT_FONT
-                c.number_format = "$#,##0.00"
-            total_f = f"=B{row}+C{row}+D{row}"
-            c = ws7.cell(row=row, column=5, value=total_f)
-            c.font = FORMULA_FONT
-            c.number_format = "$#,##0.00"
-            for cc in range(1, 6):
-                ws7.cell(row=row, column=cc).border = THIN
-            row += 1
-        recap_last_row = row - 1
-        ws7.cell(row=row, column=1, value="Totals").font = BOLD_FONT
-        for cc in (2, 3, 4, 5):
-            col_letter = get_column_letter(cc)
-            c = ws7.cell(row=row, column=cc,
-                         value=f"=SUM({col_letter}{recap_first_row}:{col_letter}{recap_last_row})")
-            c.font = BOLD_FONT
-            c.number_format = "$#,##0.00"
-        for cc in range(1, 6):
-            ws7.cell(row=row, column=cc).border = THIN
-            ws7.cell(row=row, column=cc).fill = TOTALS_FILL
-        autosize(ws7)
+    if driver_info or contract_labor_hours:
+        ws7 = wb.create_sheet("Contractors Payments")
+        sub_font = Font(name=FONT_NAME, size=12, bold=True)
+        row = 1
+        ws7.cell(row=row, column=1, value="Contractors Payments").font = TITLE_FONT
+        row += 1
+        ws7.cell(row=row, column=1,
+                 value="1099 contractors -- drivers and contract labor. Not part of ADP Entry "
+                       "(1099s aren't payroll, no taxes withheld here).").font = NOTE_FONT
+        row += 2
 
-    # Added 9/23/2026 (per Guapo): Contract Labor gets the same treatment
-    # as the 1099 drivers above -- its own recap sheet, outside ADP Entry.
-    # Rate/wages added same day (per Guapo -- "include their wage"): Pay $
-    # is a live formula (Rate x Regular Hours, plus the same 1.5x OT
-    # premium a W2 employee gets on hours over 40/week), not a manual-entry
-    # cell like the drivers' Deliveries $/Setups $ -- this app DOES know
-    # their rate (set on the Employees tab) and DOES see their hours (they
-    # punch the timeclock), unlike a driver. Someone with no rate on file
-    # yet gets blank Rate/Pay $ cells plus the contract_labor_rate_missing
-    # warning above, rather than a silently wrong $0.
-    if contract_labor_hours:
-        ws8 = wb.create_sheet("Contract Labor (1099s) Recap")
-        r8 = title_block(ws8, "Contract Labor (1099s) Recap", [
-            "For timeclock punches from people paid as 1099 contract labor for this work, not a",
-            "W2 wage (added via the Employees tab's Contract Labor roster).",
-            "Regular Hours/Overtime Hours/Man-Days are computed the same way as a W2 employee's",
-            "(breaks included, OT split at 40 hrs/week) so they're apples-to-apples.",
-            "Pay $ = Rate x Regular Hours + Rate x Overtime Hours x 1.5 -- same OT premium a W2",
-            "employee gets, just outside ADP. Blank Rate/Pay $ means no rate is on file yet --",
-            "set one on the Employees tab.",
-            "Not part of ADP Entry (1099s aren't payroll).",
-        ])
-        headers = ["Name", "Rate", "Regular Hours", "Overtime Hours", "Man-Days", "Pay $"]
-        for i, h in enumerate(headers, start=1):
-            ws8.cell(row=r8, column=i, value=h)
-        style_header(ws8, r8, len(headers))
-        row = r8 + 1
-        cl_first_row = row
-        for cname in sorted(contract_labor_hours):
-            info = contract_labor_hours[cname]
-            rate = info.get("rate")
-            ws8.cell(row=row, column=1, value=cname).font = INPUT_FONT
-            if rate is not None:
-                c = ws8.cell(row=row, column=2, value=rate)
-                c.font = INPUT_FONT
-                c.number_format = "$#,##0.00"
-            c = ws8.cell(row=row, column=3, value=info["regular_hours"])
-            c.font = FORMULA_FONT
-            c = ws8.cell(row=row, column=4, value=info["ot_hours"])
-            c.font = FORMULA_FONT
-            c = ws8.cell(row=row, column=5, value=info["man_days"])
-            c.font = FORMULA_FONT
-            if rate is not None:
-                pay_f = f"=B{row}*C{row}+B{row}*D{row}*{OT_MULTIPLIER}"
-                c = ws8.cell(row=row, column=6, value=pay_f)
+        if driver_info:
+            ws7.cell(row=row, column=1, value="Driver Payroll (1099s) Recap").font = sub_font
+            row += 1
+            for line in [
+                "Deliveries $ Total and Setups $ Total are NOT counts -- different deliveries/setups pay",
+                "different amounts, so each is the driver's own already-added-up dollar total for the period",
+                "(entered on the Tip Pool tab, same as the old Driver Payroll workbook).",
+                "Tips is NOT entered by Larry -- it's pulled from " + TIPS_SHEET + " (the same tip-pool payout",
+                "shown on the Driver Tip Payouts sheet), since that figure only exists once the tip-pool math runs.",
+                "Total = Tips + Deliveries $ Total + Setups $ Total (computed here, not separately entered).",
+            ]:
+                ws7.cell(row=row, column=1, value=line).font = NOTE_FONT
+                row += 1
+            row += 1
+            header_row = row
+            for i, h in enumerate(["Driver", "Tips", "Deliveries $ Total", "Setups $ Total", "Total"], start=1):
+                ws7.cell(row=header_row, column=i, value=h)
+            style_header(ws7, header_row, 5)
+            row = header_row + 1
+            recap_first_row = row
+            for dname, info in driver_info.items():
+                ws7.cell(row=row, column=1, value=dname).font = INPUT_FONT
+                tips_f = f'=VLOOKUP(A{row},{TIPS_SHEET}!$A${drv_rows_start}:$G${drv_rows_end},7,FALSE)'
+                c = ws7.cell(row=row, column=2, value=tips_f)
                 c.font = FORMULA_FONT
                 c.number_format = "$#,##0.00"
-            for cc in range(1, len(headers) + 1):
-                ws8.cell(row=row, column=cc).border = THIN
-            row += 1
-        cl_last_row = row - 1
-        ws8.cell(row=row, column=1, value="Totals").font = BOLD_FONT
-        for cc in (3, 4, 5, 6):
-            col_letter = get_column_letter(cc)
-            c = ws8.cell(row=row, column=cc,
-                         value=f"=SUM({col_letter}{cl_first_row}:{col_letter}{cl_last_row})")
-            c.font = BOLD_FONT
-            if cc == 6:
+                for cc, field in ((3, "deliveries"), (4, "setups")):
+                    c = ws7.cell(row=row, column=cc, value=info.get(field, 0) or 0)
+                    c.font = INPUT_FONT
+                    c.number_format = "$#,##0.00"
+                total_f = f"=B{row}+C{row}+D{row}"
+                c = ws7.cell(row=row, column=5, value=total_f)
+                c.font = FORMULA_FONT
                 c.number_format = "$#,##0.00"
-        for cc in range(1, len(headers) + 1):
-            ws8.cell(row=row, column=cc).border = THIN
-            ws8.cell(row=row, column=cc).fill = TOTALS_FILL
-        autosize(ws8)
+                for cc in range(1, 6):
+                    ws7.cell(row=row, column=cc).border = THIN
+                row += 1
+            recap_last_row = row - 1
+            ws7.cell(row=row, column=1, value="Totals").font = BOLD_FONT
+            for cc in (2, 3, 4, 5):
+                col_letter = get_column_letter(cc)
+                c = ws7.cell(row=row, column=cc,
+                             value=f"=SUM({col_letter}{recap_first_row}:{col_letter}{recap_last_row})")
+                c.font = BOLD_FONT
+                c.number_format = "$#,##0.00"
+            for cc in range(1, 6):
+                ws7.cell(row=row, column=cc).border = THIN
+                ws7.cell(row=row, column=cc).fill = TOTALS_FILL
+            row += 3
+
+        # Added 9/23/2026 (per Guapo): Contract Labor gets the same treatment
+        # as the 1099 drivers above -- now the same sheet ("Contractors
+        # Payments", per Guapo 9/23/2026 -- "any contract labor... show up
+        # on the same page as Drivers Payroll"). Rate/wages: Pay $ is a
+        # live formula (Rate x Regular Hours, plus the same 1.5x OT premium
+        # a W2 employee gets on hours over 40/week), not a manual-entry
+        # cell like the drivers' Deliveries $/Setups $ -- this app DOES
+        # know their rate (set on the Employees tab) and DOES see their
+        # hours (they punch the timeclock), unlike a driver. Someone with
+        # no rate on file yet gets blank Rate/Pay $ cells plus the
+        # contract_labor_rate_missing warning above, rather than a
+        # silently wrong $0.
+        if contract_labor_hours:
+            ws7.cell(row=row, column=1, value="Contract Labor (1099s) Recap").font = sub_font
+            row += 1
+            for line in [
+                "For timeclock punches from people paid as 1099 contract labor for this work, not a",
+                "W2 wage (added via the Employees tab's Contract Labor roster).",
+                "Regular Hours/Overtime Hours/Man-Days are computed the same way as a W2 employee's",
+                "(breaks included, OT split at 40 hrs/week) so they're apples-to-apples.",
+                "Pay $ = Rate x Regular Hours + Rate x Overtime Hours x 1.5 -- same OT premium a W2",
+                "employee gets, just outside ADP. Blank Rate/Pay $ means no rate is on file yet --",
+                "set one on the Employees tab.",
+            ]:
+                ws7.cell(row=row, column=1, value=line).font = NOTE_FONT
+                row += 1
+            row += 1
+            header_row = row
+            headers = ["Name", "Rate", "Regular Hours", "Overtime Hours", "Man-Days", "Pay $"]
+            for i, h in enumerate(headers, start=1):
+                ws7.cell(row=header_row, column=i, value=h)
+            style_header(ws7, header_row, len(headers))
+            row = header_row + 1
+            cl_first_row = row
+            for cname in sorted(contract_labor_hours):
+                info = contract_labor_hours[cname]
+                rate = info.get("rate")
+                ws7.cell(row=row, column=1, value=cname).font = INPUT_FONT
+                if rate is not None:
+                    c = ws7.cell(row=row, column=2, value=rate)
+                    c.font = INPUT_FONT
+                    c.number_format = "$#,##0.00"
+                c = ws7.cell(row=row, column=3, value=info["regular_hours"])
+                c.font = FORMULA_FONT
+                c = ws7.cell(row=row, column=4, value=info["ot_hours"])
+                c.font = FORMULA_FONT
+                c = ws7.cell(row=row, column=5, value=info["man_days"])
+                c.font = FORMULA_FONT
+                if rate is not None:
+                    pay_f = f"=B{row}*C{row}+B{row}*D{row}*{OT_MULTIPLIER}"
+                    c = ws7.cell(row=row, column=6, value=pay_f)
+                    c.font = FORMULA_FONT
+                    c.number_format = "$#,##0.00"
+                for cc in range(1, len(headers) + 1):
+                    ws7.cell(row=row, column=cc).border = THIN
+                row += 1
+            cl_last_row = row - 1
+            ws7.cell(row=row, column=1, value="Totals").font = BOLD_FONT
+            for cc in (3, 4, 5, 6):
+                col_letter = get_column_letter(cc)
+                c = ws7.cell(row=row, column=cc,
+                             value=f"=SUM({col_letter}{cl_first_row}:{col_letter}{cl_last_row})")
+                c.font = BOLD_FONT
+                if cc == 6:
+                    c.number_format = "$#,##0.00"
+            for cc in range(1, len(headers) + 1):
+                ws7.cell(row=row, column=cc).border = THIN
+                ws7.cell(row=row, column=cc).fill = TOTALS_FILL
+            row += 1
+
+        autosize(ws7)
 
     # --- Earnout pivot: mirrors Rod's reference exactly -- a "Sum of amt"
     # style pivot (dates as columns) filtered down to just the alias and
