@@ -634,6 +634,27 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     # driver_days: THIS period's own days, used for the recap sheet display
     # and (on a non-tip week) is simply unused for any payout math.
     driver_days = {name: info.get("days", 0) for name, info in driver_info.items()}
+
+    # Added 9/23/2026 (per Guapo) -- caught this run: Andrea Redlinger is a
+    # W2 employee whose delivery/setup stipend is supposed to go through
+    # Delivery/Misc Amount requests (taxed as ADP wages), but someone also
+    # entered her in the 1099 Driver Payroll table for the same period --
+    # which pays her outside ADP as if she were a contractor AND dilutes
+    # the tip-pool days-driven split for the actual 1099 drivers. This
+    # can't be blocked outright (Driver Name is free text, and a manager
+    # backing Larry up won't always know who's W2), so it's a warning, the
+    # same as every other data-quality check in this function.
+    driver_employee_overlap = sorted(set(driver_info) & set(employees))
+    if driver_employee_overlap:
+        warnings.append(
+            "These names are entered as 1099 drivers this period but are also current W2 "
+            "employees, so they're being treated as a contractor paid outside ADP: " +
+            ", ".join(driver_employee_overlap) + ". If this is really a delivery/setup stipend "
+            "for their hourly job, log it as a Delivery/Misc Amount payroll request instead "
+            "(taxed correctly through ADP) and remove them from the 1099 Driver Payroll table -- "
+            "their \"days driven\" is also diluting the tip-pool split for the actual 1099 drivers."
+        )
+
     tip_week = is_tip_week(pay_date)
 
     original_records = parse_raw_export_text(csv_text)

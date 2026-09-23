@@ -529,16 +529,51 @@ function addDriverRow(name = "", days = "", deliveries = "", setups = "") {
     <td><input type="number" step="0.01" min="0" class="driverSetups" value="${esc(setups)}" style="width:90px" placeholder="$ total" title="Dollar total of all setups this driver did this period -- not a count." /></td>
     <td><button class="link removeDriverBtn" type="button">remove</button></td>
   `;
-  tr.querySelector(".removeDriverBtn").addEventListener("click", () => tr.remove());
+  tr.querySelector(".removeDriverBtn").addEventListener("click", () => {
+    tr.remove();
+    checkDriverEmployeeOverlap();
+  });
   $("driverRows").appendChild(tr);
+  checkDriverEmployeeOverlap();
 }
 
 $("addDriverBtn").addEventListener("click", () => addDriverRow());
+
+// Added 9/23/2026 (per Guapo) -- caught this run: Andrea Redlinger is a W2
+// employee whose delivery/setup stipend belongs on a Delivery/Misc Amount
+// payroll request (taxed through ADP), but someone entered her in this
+// 1099 Driver Payroll table too, which pays her outside ADP as if she were
+// a contractor AND dilutes the tip-pool days-driven split for the real
+// 1099 drivers. employeesCache only loads for admin/manager (never for
+// Larry's entry role -- he isn't allowed the employee roster at all, see
+// main.py's role docstring), so this only fires for Rod/Mike/Thao; the
+// authoritative catch for every path, Larry's tips-input form included, is
+// the matching warning in report_builder.build_report at generation time.
+function checkDriverEmployeeOverlap() {
+  const el = $("driverEmployeeWarning");
+  if (!el) return;
+  if (!employeesCache.length) {
+    el.textContent = "";
+    return;
+  }
+  const knownNames = new Set(employeesCache.map((e) => e.name));
+  const overlap = [...new Set(readDriverRows().map((d) => d.name))].filter((n) => knownNames.has(n));
+  el.textContent = overlap.length
+    ? `${overlap.join(", ")} ${overlap.length > 1 ? "are" : "is"} already a W2 employee -- a driver ` +
+      `row pays outside ADP as a contractor and adds to the tip-pool days-driven split. If this is a ` +
+      `delivery/setup stipend for their hourly job, log it as a Delivery/Misc Amount payroll request ` +
+      `instead and remove ${overlap.length > 1 ? "them" : "this row"} from the table below.`
+    : "";
+}
+$("driverRows").addEventListener("input", (e) => {
+  if (e.target.classList.contains("driverName")) checkDriverEmployeeOverlap();
+});
 
 function resetDriverRows(drivers) {
   $("driverRows").innerHTML = "";
   (drivers && drivers.length ? drivers : DEFAULT_DRIVERS.map((n) => ({ name: n, days: 0, deliveries: 0, setups: 0 })))
     .forEach((d) => addDriverRow(d.name, d.days, d.deliveries, d.setups));
+  checkDriverEmployeeOverlap();
 }
 
 function readDriverRows() {
