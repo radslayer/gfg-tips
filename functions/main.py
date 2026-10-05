@@ -29,6 +29,7 @@ from firebase_functions import https_fn, options, scheduler_fn
 
 import report_builder
 import driver_advice_pdf
+import graph_onedrive
 
 firebase_admin.initialize_app()
 
@@ -406,7 +407,8 @@ def create_user(req: https_fn.CallableRequest):
     return {"uid": user.uid, "email": email}
 
 
-@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_512, timeout_sec=120)
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_512, timeout_sec=120,
+                   secrets=["GRAPH_CLIENT_SECRET"])
 def generate_payroll_report(req: https_fn.CallableRequest):
     """Owner-only. Runs every biweekly pay period now, not just tip weeks
     (fixed 9/3/2026 -- see report_builder.is_tip_week). Builds the payroll
@@ -613,6 +615,24 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+        # Added 10/5/2026 (per Guapo) -- also push straight to the shared
+        # OneDrive folders the front office and CPAs actually check, via
+        # the GFG Payroll Integration Azure AD app (see graph_onedrive.py).
+        # A single Graph token is fetched once and reused for every file
+        # in this run. OneDrive problems are collected as warnings, never
+        # raised -- the Firestore + Cloud Storage work above is the real
+        # system of record and must never be blocked by Microsoft being
+        # flaky.
+        graph_token = None
+        try:
+            graph_token = graph_onedrive.get_token()
+            graph_onedrive.upload_file(
+                graph_token, graph_onedrive.EES_FOLDER, report_filename, wb_bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        except Exception as e:
+            warnings.append(f"OneDrive: couldn't upload the report workbook ({e}).")
+
         for d in summary.get("drivers", []):
             dname = d.get("name")
             if not dname:
@@ -640,6 +660,14 @@ def generate_payroll_report(req: https_fn.CallableRequest):
                 "filename": filename,
                 "pdfBase64": base64.b64encode(pdf_bytes).decode("ascii"),
             })
+
+            if graph_token:
+                try:
+                    graph_onedrive.upload_file(
+                        graph_token, graph_onedrive.DRIVERS_FOLDER, filename,
+                        pdf_bytes, "application/pdf")
+                except Exception as e:
+                    warnings.append(f"OneDrive: couldn't upload {filename} ({e}).")
 
     return {
         "summary": summary,
