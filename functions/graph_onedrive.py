@@ -2,6 +2,9 @@
 Microsoft Graph / OneDrive upload helper for the GFG Payroll Integration
 Azure AD app registration (app-only / client-credentials auth).
 
+# deploy-marker: 2026-10-05 -- forces a real content change so Firebase
+# doesn't skip this function as "unchanged" on the first deploy attempt.
+
 Set up 10/5/2026 (per Guapo) so the finalized payroll report and driver
 advice PDFs land directly in the shared OneDrive folders the front
 office and CPAs actually check, instead of only sitting in Cloud
