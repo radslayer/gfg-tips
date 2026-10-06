@@ -540,6 +540,21 @@
           <input type="text" id="empAdpName" placeholder="e.g. a full legal name ADP has on file" />
         </div>
       </div>
+      <div class="row">
+        <div class="field">
+          <label for="empBonusRole">Bonus role (Kitchen Manager / Supervisor bonus)</label>
+          <select id="empBonusRole">
+            <option value="">(none)</option>
+            <option value="Kitchen Manager">Kitchen Manager</option>
+            <option value="Supervisor">Supervisor</option>
+          </select>
+        </div>
+      </div>
+      <div class="small" style="margin-bottom:10px;">
+        Exactly one person should be tagged "Kitchen Manager" and one "Supervisor" at a time --
+        the Payroll Report looks this bonus up by role, not by name, so it goes wherever this
+        is set. Leave blank for everyone else.
+      </div>
       <div class="small" style="margin-bottom:10px;">
         If you leave "ADP name" blank, the report will still use the Name
         above for this person's row, but will flag it every time as an
@@ -551,7 +566,7 @@
       <div id="empMsg" class="msg"></div>
       <div class="table-wrap" style="margin-top:16px;">
         <table>
-          <thead><tr><th>Name</th><th>Dept</th><th>Rate</th><th>Tips?</th><th>Salaried?</th><th>ADP Name</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Dept</th><th>Rate</th><th>Tips?</th><th>Salaried?</th><th>ADP Name</th><th>Bonus Role</th><th></th></tr></thead>
           <tbody id="employeeRows"></tbody>
         </table>
       </div>
@@ -688,6 +703,21 @@
         <div id="savedReportMsg" class="msg"></div>
       </div>
 
+      <div class="row" id="bonusSalesFields">
+        <div class="field">
+          <label for="salesWeek1" id="salesWeek1Label">Sales -- week 1</label>
+          <input type="number" step="0.01" min="0" id="salesWeek1" />
+        </div>
+        <div class="field">
+          <label for="salesWeek2" id="salesWeek2Label">Sales -- week 2</label>
+          <input type="number" step="0.01" min="0" id="salesWeek2" />
+        </div>
+      </div>
+      <div class="small" style="margin-bottom:14px;">
+        Needed every period (tip week or not) to keep the Kitchen Manager/Supervisor bonus
+        history current -- see the new "Bonus Calc" sheet in the generated workbook.
+      </div>
+
       <div class="field">
         <label for="reportCsvFile">Raw timeclock export (Transaction Report .csv)</label>
         <input type="file" id="reportCsvFile" accept=".csv" />
@@ -698,6 +728,7 @@
       </div>
       <button class="primary" id="generateReportBtn">Generate report</button>
       <div id="reportMsg" class="msg"></div>
+      <div id="reportBonusMsg" class="msg ok hidden"></div>
 
       <div id="reportResults" class="hidden" style="margin-top:20px;">
         <div id="reportWarnings" class="msg error" style="margin-bottom:10px;"></div>

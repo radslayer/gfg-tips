@@ -230,6 +230,95 @@ def rod_medical_amount(pay_date):
 
 
 # ---------------------------------------------------------------------------
+# Kitchen Manager / Supervisor bonus (reverse-engineered 10/6/2026 from the
+# old Excel "bonus calc" tab + real historical payouts, then redefined by
+# Guapo: Thao's bonus is retired; "Mike" is renamed "Kitchen Manager" and
+# "Alex" is renamed "Supervisor", looked up by a `bonusRole` tag on the
+# `employees` collection rather than hardcoded by name -- a future change
+# of who holds the role is a Firestore edit (the Employees tab), not a
+# code change.
+# ---------------------------------------------------------------------------
+BONUS_BASIS = 500.0
+KITCHEN_MANAGER_ROLE = "Kitchen Manager"
+SUPERVISOR_ROLE = "Supervisor"
+# (minimum ratio, multiplier) pairs, checked highest-first -- identical
+# table for both roles, verified against two real historical Kitchen
+# Manager payouts ($0 @ 85.26, $250 @ 107.94 avg $/kitchen-hr) and one real
+# historical Supervisor payout ($500 @ 110.89 avg $/kitchen-hr).
+BONUS_BRACKETS = [
+    (120.0, 2.0),
+    (115.0, 1.5),
+    (110.0, 1.0),
+    (100.0, 0.5),
+]
+
+
+def bonus_multiplier_for_ratio(ratio):
+    """ratio = Sales $ / Kitchen Hours, already averaged over whichever
+    window applies (trailing 4 weeks for Kitchen Manager, the just-ended
+    calendar quarter for Supervisor). Brackets are >= their threshold and
+    < the next one up; below the lowest threshold is multiplier 0."""
+    for threshold, multiplier in BONUS_BRACKETS:
+        if ratio >= threshold:
+            return multiplier
+    return 0.0
+
+
+def compute_weekly_kitchen_hours(records, employees):
+    """Sum of paid hours (punched + break minutes -- the same 'paid_basis'
+    compute_hours_and_wages uses for the OT split) per calendar week, for
+    employees tagged department 'K' only. The live-data equivalent of the
+    old Excel Recap tab's SUMIF(location="k", hours). Returns
+    {week_start_date: hours}."""
+    daily_hours = defaultdict(float)
+    daily_count = defaultdict(int)
+    for name, date, amt in records:
+        if employees.get(name, {}).get("department") != "K":
+            continue
+        daily_hours[(name, date)] += amt
+        daily_count[(name, date)] += 1
+    weekly = defaultdict(float)
+    for (name, date), hrs in daily_hours.items():
+        wk = week_start(date)
+        brk = break_minutes_for_hours(hrs) / 60.0 if daily_count[(name, date)] > 2 else 0.0
+        weekly[wk] += hrs + brk
+    return dict(weekly)
+
+
+def is_last_payroll_of_month(pay_date):
+    """True if the NEXT biweekly pay date (14 days later) falls in a
+    different calendar month -- i.e. this is the last payroll run within
+    pay_date's own month, under the fixed 14-day cadence."""
+    nxt = pay_date + timedelta(days=14)
+    return nxt.month != pay_date.month or nxt.year != pay_date.year
+
+
+def is_supervisor_bonus_week(pay_date):
+    """Supervisor is paid quarterly, specifically on the last payroll of
+    the month immediately following a calendar quarter's end (Jan/Apr/
+    Jul/Oct) -- per Guapo 10/6/2026, a new, more precise rule than how
+    this was triggered by hand in the old spreadsheet (those historical
+    payouts just show Rod choosing when to key the number into ADP)."""
+    return pay_date.month in (1, 4, 7, 10) and is_last_payroll_of_month(pay_date)
+
+
+def quarter_just_ended(pay_date):
+    """Returns (start, end) datetimes (inclusive) of the calendar quarter
+    that ended the month before pay_date's month -- only meaningful when
+    is_supervisor_bonus_week(pay_date) is True (pay_date.month in
+    (1, 4, 7, 10)). E.g. pay_date in January -> the prior Oct 1-Dec 31."""
+    if pay_date.month == 1:
+        return datetime(pay_date.year - 1, 10, 1), datetime(pay_date.year - 1, 12, 31)
+    if pay_date.month == 4:
+        return datetime(pay_date.year, 1, 1), datetime(pay_date.year, 3, 31)
+    if pay_date.month == 7:
+        return datetime(pay_date.year, 4, 1), datetime(pay_date.year, 6, 30)
+    if pay_date.month == 10:
+        return datetime(pay_date.year, 7, 1), datetime(pay_date.year, 9, 30)
+    raise ValueError(f"{pay_date} isn't in a Supervisor bonus trigger month")
+
+
+# ---------------------------------------------------------------------------
 # Sister-company (e.g. Easy Entrées) hours folding + earnout pivot
 # (ported from timeclock_to_adp.py)
 # ---------------------------------------------------------------------------
@@ -555,7 +644,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                   total_tip_revenue, bonnie_brae, swift, driver_info,
                   pending_pto, pending_purchases, pending_misc_amt,
                   pending_misc_reimb, sister_map=None, prior_driver_info=None,
-                  prior_w2_man_days=None, contract_labor=None):
+                  prior_w2_man_days=None, contract_labor=None,
+                  sales_week1=0.0, sales_week2=0.0, historical_weekly_ratios=None):
     """employees/order: same shape as before (dict name -> {department,
     rate, tip_eligible}, plus the name order list).
 
@@ -815,6 +905,115 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         "ptoRequests": pto_ids, "employeePurchases": purch_ids,
         "miscAmounts": misc_amt_ids, "miscReimbursements": misc_reimb_ids,
     }
+
+    # -------- Kitchen Manager / Supervisor bonus --------
+    # This period's two calendar weeks (the second one always ends ON
+    # pay_date -- see PAY_DATE_ANCHOR's weekday in the module docstring --
+    # the first ends 7 days before it).
+    week2_start = week_start(pay_date)
+    week1_start = week2_start - timedelta(days=7)
+    week1_ending = pay_date - timedelta(days=7)
+    week2_ending = pay_date
+    kitchen_hours_by_week = compute_weekly_kitchen_hours(records, employees)
+    kitchen_hours1 = kitchen_hours_by_week.get(week1_start, 0.0)
+    kitchen_hours2 = kitchen_hours_by_week.get(week2_start, 0.0)
+    ratio1 = (sales_week1 / kitchen_hours1) if kitchen_hours1 else None
+    ratio2 = (sales_week2 / kitchen_hours2) if kitchen_hours2 else None
+
+    all_known_ratios = {}  # date -> ratio, historical weeks + this period's
+    for item in (historical_weekly_ratios or []):
+        we = item.get("weekEnding")
+        r = item.get("ratio")
+        if we is None or r is None:
+            continue
+        if isinstance(we, str):
+            we = datetime.strptime(we, "%Y-%m-%d")
+        all_known_ratios[we.date()] = r
+
+    bonus_calc_weeks = []
+    for we, sales, kh, ratio in (
+        (week1_ending, sales_week1, kitchen_hours1, ratio1),
+        (week2_ending, sales_week2, kitchen_hours2, ratio2),
+    ):
+        bonus_calc_weeks.append({
+            "weekEnding": we, "sales": sales, "kitchenHours": round(kh, 2), "ratio": ratio,
+        })
+        if ratio is None:
+            warnings.append(
+                f"No Kitchen Hours were worked the week ending {we:%m/%d/%Y}, so this "
+                "week's Sales-per-Kitchen-Hour couldn't be computed and was left out of "
+                "the Kitchen Manager/Supervisor bonus history for that week."
+            )
+        else:
+            all_known_ratios[we.date()] = ratio
+
+    def _bonus_employee_for_role(role):
+        matches = [name for name in order if employees[name].get("bonus_role") == role]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            warnings.append(
+                f'More than one employee is tagged "{role}" on the Employees tab '
+                f"({', '.join(matches)}) -- the {role} bonus was skipped this period "
+                "rather than guess who should get it. Fix the Bonus Role field so only "
+                "the one person who actually holds this role has it set."
+            )
+        return None
+
+    bonus_amounts = {}
+    bonuses_paid = []
+
+    if tip_week:
+        window_dates = sorted(all_known_ratios, reverse=True)[:4]
+        if window_dates:
+            km_avg = sum(all_known_ratios[d] for d in window_dates) / len(window_dates)
+            km_mult = bonus_multiplier_for_ratio(km_avg)
+            km_amount = round(km_mult * BONUS_BASIS, 2)
+            km_name = _bonus_employee_for_role(KITCHEN_MANAGER_ROLE)
+            if km_name is None:
+                warnings.append(
+                    "This is a Kitchen Manager bonus week (tip payout week), but no one "
+                    'is tagged "Kitchen Manager" on the Employees tab -- no bonus was '
+                    f"paid. Would have been ${km_amount:,.2f} (avg ${km_avg:.2f}/kitchen-"
+                    f"hr over {len(window_dates)} week(s))."
+                )
+            else:
+                bonus_amounts[km_name] = bonus_amounts.get(km_name, 0.0) + km_amount
+            bonuses_paid.append({
+                "role": KITCHEN_MANAGER_ROLE, "employee": km_name, "amount": km_amount,
+                "avgRatio": round(km_avg, 2), "windowWeeks": len(window_dates),
+                "multiplier": km_mult,
+            })
+
+    if is_supervisor_bonus_week(pay_date):
+        q_start, q_end = quarter_just_ended(pay_date)
+        window_dates = sorted(d for d in all_known_ratios if q_start.date() <= d <= q_end.date())
+        if window_dates:
+            sup_avg = sum(all_known_ratios[d] for d in window_dates) / len(window_dates)
+            sup_mult = bonus_multiplier_for_ratio(sup_avg)
+            sup_amount = round(sup_mult * BONUS_BASIS, 2)
+            sup_name = _bonus_employee_for_role(SUPERVISOR_ROLE)
+            if sup_name is None:
+                warnings.append(
+                    "This is a Supervisor bonus week (last payroll of the month "
+                    'following a quarter-end), but no one is tagged "Supervisor" on the '
+                    f"Employees tab -- no bonus was paid. Would have been "
+                    f"${sup_amount:,.2f} (avg ${sup_avg:.2f}/kitchen-hr over "
+                    f"{len(window_dates)} week(s), {q_start:%m/%d/%Y}-{q_end:%m/%d/%Y})."
+                )
+            else:
+                bonus_amounts[sup_name] = bonus_amounts.get(sup_name, 0.0) + sup_amount
+            bonuses_paid.append({
+                "role": SUPERVISOR_ROLE, "employee": sup_name, "amount": sup_amount,
+                "avgRatio": round(sup_avg, 2), "windowWeeks": len(window_dates),
+                "multiplier": sup_mult, "quarter": f"{q_start:%m/%d/%Y}-{q_end:%m/%d/%Y}",
+            })
+        else:
+            warnings.append(
+                "This is a Supervisor bonus week, but no weekly Sales/Kitchen-Hour "
+                f"history was found for the quarter that just ended ({q_start:%m/%d/%Y}-"
+                f"{q_end:%m/%d/%Y}) -- no bonus was computed."
+            )
 
     # -------- daily records for Sheet 1 --------
     daily_hours = defaultdict(float)
@@ -1158,6 +1357,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 cell.value = f'=IFERROR(VLOOKUP({name_key},{TIPS_SHEET}!$A${w2_rows_start}:$G${w2_rows_end},7,FALSE),"")'
             elif col_name == "2% S-Corp Medical" and name == ROD_ROW_NAME and rod_medical is not None:
                 cell.value = rod_medical
+            elif col_name == "Bonus Amount" and name in bonus_amounts:
+                cell.value = bonus_amounts[name]
             elif col_name in DED_COLS:
                 cell.value = ded_lookup(DED_COLS[col_name], name_key)
         return r
@@ -1204,6 +1405,68 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             cell.number_format = ADP_ACCOUNTING_FORMAT
     for col_name, width in ADP_COLUMN_WIDTHS.items():
         ws5.column_dimensions[get_column_letter(col_index[col_name])].width = width
+
+    # ---- Bonus Calc (Kitchen Manager / Supervisor) ----
+    ws_bc = wb.create_sheet("Bonus Calc")
+    r_bc = title_block(ws_bc, "Kitchen Manager / Supervisor Bonus", [
+        "Formula: Sales $ / Kitchen Hours (all department 'K' employees, that week) -> "
+        f"bracket -> multiplier x ${BONUS_BASIS:,.0f} basis. Same formula for both roles.",
+        "Kitchen Manager: trailing 4-week average, paid on tip payout weeks only.",
+        "Supervisor: average over the calendar quarter that just ended, paid on the last "
+        "payroll of the month right after that quarter ends (Jan/Apr/Jul/Oct).",
+        "Looked up by the \"Bonus Role\" tag on the Employees tab, not a hardcoded name -- "
+        "if that's blank or set on more than one person, see the warnings banner instead "
+        "of a name below.",
+    ])
+    ws_bc.cell(row=r_bc, column=1, value="This period's weeks").font = BOLD_FONT
+    r_bc += 1
+    for i, h in enumerate(["Week Ending", "Sales $", "Kitchen Hours", "Sales / Kitchen Hour"], start=1):
+        ws_bc.cell(row=r_bc, column=i, value=h)
+    style_header(ws_bc, r_bc, 4)
+    r_bc += 1
+    for wk in bonus_calc_weeks:
+        dcell = ws_bc.cell(row=r_bc, column=1, value=wk["weekEnding"])
+        dcell.number_format = "mm/dd/yyyy"
+        scell = ws_bc.cell(row=r_bc, column=2, value=wk["sales"])
+        scell.number_format = "$#,##0.00"
+        kcell = ws_bc.cell(row=r_bc, column=3, value=wk["kitchenHours"])
+        kcell.number_format = "#,##0.00"
+        if wk["ratio"] is not None:
+            rcell = ws_bc.cell(row=r_bc, column=4, value=round(wk["ratio"], 2))
+            rcell.number_format = "#,##0.00"
+        else:
+            ws_bc.cell(row=r_bc, column=4, value="(no kitchen hours)")
+        for cc in range(1, 5):
+            ws_bc.cell(row=r_bc, column=cc).border = THIN
+            ws_bc.cell(row=r_bc, column=cc).font = INPUT_FONT
+        r_bc += 1
+    r_bc += 1
+
+    if bonuses_paid:
+        for bp in bonuses_paid:
+            ws_bc.cell(row=r_bc, column=1, value=f'{bp["role"]} bonus this period').font = BOLD_FONT
+            r_bc += 1
+            window_desc = f'{bp["windowWeeks"]} week(s)'
+            if bp.get("quarter"):
+                window_desc += f' ({bp["quarter"]})'
+            lines = [
+                f'Paid to: {bp["employee"] or "(no one -- see warnings banner)"}',
+                f'Average Sales/Kitchen-Hour over {window_desc}: ${bp["avgRatio"]:,.2f}',
+                f'Bracket multiplier: {bp["multiplier"]}x  x  ${BONUS_BASIS:,.0f} basis = '
+                f'${bp["amount"]:,.2f}',
+            ]
+            for line in lines:
+                ws_bc.cell(row=r_bc, column=1, value=line).font = NOTE_FONT
+                r_bc += 1
+            r_bc += 1
+    else:
+        ws_bc.cell(
+            row=r_bc, column=1,
+            value="Neither bonus triggers this period (not a tip payout week and not the "
+                  "last payroll of a quarter-end-following month) -- this period's weeks "
+                  "above are still logged for future trailing-window averages."
+        ).font = NOTE_FONT
+    autosize(ws_bc)
 
     if driver_days_for_tips:
         ws6 = wb.create_sheet("Driver Tip Payouts (1099s)")
@@ -1488,6 +1751,16 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         # are exactly the names already excluded from this report, listed
         # in the plain-text warning above.
         "unknownTimeclockNames": unknown_names,
+        # Persisted by main.py (on finalize) into the `weeklyBonusMetrics`
+        # collection -- the durable history both the Kitchen Manager (4-wk
+        # trailing) and Supervisor (quarterly) windows read from on future
+        # runs. weekEnding is a plain date string here (not a datetime) so
+        # this survives the callable function's JSON response untouched.
+        "bonusWeeklyMetrics": [
+            {**wk, "weekEnding": wk["weekEnding"].strftime("%Y-%m-%d")}
+            for wk in bonus_calc_weeks
+        ],
+        "bonusesPaid": bonuses_paid,
         "warnings": warnings,
     }
     return buf.read(), summary, warnings, consumed_ids

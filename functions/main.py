@@ -86,6 +86,12 @@ def _load_employees_from_firestore(db):
             # employee still missing this rather than silently assuming
             # ADP's name matches the app's.
             "adp_name": (d.get("adpName") or "").strip() or None,
+            # Added 10/6/2026 (per Guapo): "Kitchen Manager" or "Supervisor"
+            # (or unset) -- the Kitchen Manager/Supervisor bonus is looked
+            # up by this role tag, not a hardcoded name, so a future change
+            # of who holds the role is a Firestore edit (the Employees
+            # tab), not a code change. See report_builder's bonus section.
+            "bonus_role": d.get("bonusRole") or None,
         }
         order.append(name)
     return employees, order
@@ -435,6 +441,12 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     csv_b64 = data.get("csvBase64")
     csv_name = data.get("csvFilename") or "timeclock.csv"
     finalize = bool(data.get("finalize"))
+    # Added 10/6/2026 (per Guapo) -- the two calendar weeks' Sales $,
+    # entered by hand on the Payroll Report tab every period (tip week or
+    # not), since the app has no revenue tracking of its own. Feeds the
+    # Kitchen Manager/Supervisor bonus calc in report_builder.build_report.
+    sales_week1 = float(data.get("salesWeek1") or 0)
+    sales_week2 = float(data.get("salesWeek2") or 0)
 
     if not pay_period_id:
         raise https_fn.HttpsError(
@@ -538,6 +550,22 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             ]
         pending[coll_name] = docs_data
 
+    # Added 10/6/2026 (per Guapo) -- every already-finalized week's Sales/
+    # Kitchen-Hour ratio on file, strictly before this period's own two
+    # weeks (so re-running/correcting this same period never counts its
+    # own weeks twice). The collection is small (2 new docs per pay
+    # period, ever) so this just reads it all and sorts/filters in
+    # Python rather than needing a composite Firestore index.
+    week1_ending_str = (pay_date - timedelta(days=7)).strftime("%Y-%m-%d")
+    historical_weekly_ratios = []
+    for doc in db.collection("weeklyBonusMetrics").stream():
+        d = doc.to_dict()
+        we = d.get("weekEnding")
+        ratio = d.get("salesPerKitchenHour")
+        if not we or ratio is None or we >= week1_ending_str:
+            continue
+        historical_weekly_ratios.append({"weekEnding": we, "ratio": ratio})
+
     try:
         wb_bytes, summary, warnings, consumed_ids = report_builder.build_report(
             csv_text=csv_text,
@@ -557,6 +585,9 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             prior_driver_info=prior_driver_info,
             prior_w2_man_days=prior_w2_man_days,
             contract_labor=contract_labor,
+            sales_week1=sales_week1,
+            sales_week2=sales_week2,
+            historical_weekly_ratios=historical_weekly_ratios,
         )
     except report_builder.ReportError as e:
         raise https_fn.HttpsError(https_fn.FunctionsErrorCode.INVALID_ARGUMENT, str(e))
@@ -585,6 +616,25 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             {"w2ManDays": summary.get("w2ManDaysThisPeriod") or {}},
             merge=True,
         )
+        # Added 10/6/2026 (per Guapo) -- persist THIS period's two weekly
+        # Sales/Kitchen-Hour figures into `weeklyBonusMetrics`, keyed by
+        # week-ending date, regardless of whether a bonus actually fired
+        # this period. This is the durable history the Kitchen Manager
+        # (trailing 4 weeks) and Supervisor (the quarter just ended)
+        # windows both read back on every future run -- see the fetch
+        # above and report_builder's bonus section.
+        for wk in summary.get("bonusWeeklyMetrics", []):
+            batch.set(
+                db.collection("weeklyBonusMetrics").document(wk["weekEnding"]),
+                {
+                    "weekEnding": wk["weekEnding"],
+                    "sales": wk["sales"],
+                    "kitchenHours": wk["kitchenHours"],
+                    "salesPerKitchenHour": wk["ratio"],
+                    "payPeriodId": pay_period_id,
+                },
+                merge=True,
+            )
         batch.commit()
 
     # Added 9/16/2026 (per Guapo) -- one branded PDF per active 1099

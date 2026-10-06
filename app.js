@@ -202,6 +202,20 @@ function priorPayPeriodId(dateStr) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+// Added 10/6/2026 (per Guapo) -- the Payroll Report tab's two Sales
+// fields are labeled with the actual calendar week they cover (the pay
+// date's own week, and the week before it), so this is a generic
+// "dateStr +/- N days" helper, same UTC-safe arithmetic as
+// priorPayPeriodId above rather than a second copy of it.
+function addDaysToDateStr(dateStr, days) {
+  const toUTC = (s) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  const d = new Date(toUTC(dateStr) + days * 86400000);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function formatPayDateLabel(dateStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
   return new Date(y, m - 1, d).toLocaleDateString(undefined, {
@@ -623,7 +637,35 @@ async function loadPeriod(payDate) {
   recomputeNetPool();
   renderPeriodStatus();
   await applyTipWeekVisibility();
+  await updateBonusSalesFields(payDate);
   applyEditLock();
+}
+
+// Added 10/6/2026 (per Guapo) -- labels the two Sales inputs with the
+// actual calendar weeks this pay period covers, and prefills them from
+// `weeklyBonusMetrics` if this period (or a prior attempt at it) already
+// has numbers on file, so re-opening a period for a correction shows
+// what's there instead of a blank field. These two weeks feed the
+// Kitchen Manager/Supervisor bonus calc every period, tip week or not --
+// see report_builder.py's bonus section.
+async function updateBonusSalesFields(payDate) {
+  const week1Ending = addDaysToDateStr(payDate, -7);
+  const week2Ending = payDate;
+  $("salesWeek1Label").textContent = `Sales -- week ending ${formatShortDate(week1Ending)}`;
+  $("salesWeek2Label").textContent = `Sales -- week ending ${formatShortDate(week2Ending)}`;
+  $("salesWeek1").value = "";
+  $("salesWeek2").value = "";
+  try {
+    const [snap1, snap2] = await Promise.all([
+      getDoc(doc(db, "weeklyBonusMetrics", week1Ending)),
+      getDoc(doc(db, "weeklyBonusMetrics", week2Ending)),
+    ]);
+    if (snap1.exists() && snap1.data().sales != null) $("salesWeek1").value = snap1.data().sales;
+    if (snap2.exists() && snap2.data().sales != null) $("salesWeek2").value = snap2.data().sales;
+  } catch (err) {
+    // Non-fatal -- the fields just stay blank, same as a period with no
+    // history yet; Generate Report still works, it just won't prefill.
+  }
 }
 
 function renderPeriodStatus() {
@@ -852,6 +894,7 @@ function renderEmployeeRows() {
       <td>${e.tipEligible ? "Yes" : "No"}</td>
       <td>${e.salaried ? "Yes" : "No"}</td>
       <td>${e.adpName ? e.adpName : "<span style=\"color:var(--danger);\">unconfirmed</span>"}</td>
+      <td>${e.bonusRole || ""}</td>
     `;
     const editTd = document.createElement("td");
     const editBtn = document.createElement("button");
@@ -865,6 +908,7 @@ function renderEmployeeRows() {
       $("empTipEligible").value = e.tipEligible ? "y" : "n";
       $("empSalaried").value = e.salaried ? "y" : "n";
       $("empAdpName").value = e.adpName || "";
+      $("empBonusRole").value = e.bonusRole || "";
       $("employeesCard").scrollIntoView({ behavior: "smooth", block: "start" });
     });
     editTd.appendChild(editBtn);
@@ -881,6 +925,7 @@ $("empSaveBtn").addEventListener("click", async () => {
   const tipEligible = $("empTipEligible").value === "y";
   const salaried = $("empSalaried").value === "y";
   const adpName = $("empAdpName").value.trim();
+  const bonusRole = $("empBonusRole").value;
   if (!name) {
     setMsg($("empMsg"), "Enter a name.", "error");
     return;
@@ -893,6 +938,7 @@ $("empSaveBtn").addEventListener("click", async () => {
       tipEligible,
       salaried,
       adpName: adpName || null,
+      bonusRole: bonusRole || null,
     }, { merge: true });
     setMsg($("empMsg"), "Saved.", "ok");
     $("empName").value = "";
@@ -901,6 +947,7 @@ $("empSaveBtn").addEventListener("click", async () => {
     $("empTipEligible").value = "y";
     $("empSalaried").value = "n";
     $("empAdpName").value = "";
+    $("empBonusRole").value = "";
     loadEmployees();
   } catch (err) {
     setMsg($("empMsg"), "Save failed: " + err.message, "error");
@@ -2017,6 +2064,19 @@ $("generateReportBtn").addEventListener("click", async () => {
     return;
   }
   const finalize = $("reportFinalize").checked;
+  const salesWeek1Raw = $("salesWeek1").value;
+  const salesWeek2Raw = $("salesWeek2").value;
+  // Added 10/6/2026 (per Guapo) -- required whenever this run finalizes,
+  // since every period's two weeks feed the Kitchen Manager/Supervisor
+  // bonus history regardless of whether a bonus fires this period. A
+  // preview run (finalize unchecked) is allowed to leave them blank
+  // (defaults to $0) since nothing gets persisted anyway.
+  if (finalize && (salesWeek1Raw === "" || salesWeek2Raw === "")) {
+    setMsg($("reportMsg"), "Enter Sales for both weeks above before finalizing -- needed for the Kitchen Manager/Supervisor bonus history.", "error");
+    return;
+  }
+  const salesWeek1 = Number(salesWeek1Raw) || 0;
+  const salesWeek2 = Number(salesWeek2Raw) || 0;
 
   // Added 9/7/2026 (per Guapo): the checkbox now defaults to checked, so
   // the normal weekly action is one click that both produces the finished
@@ -2052,6 +2112,8 @@ $("generateReportBtn").addEventListener("click", async () => {
       csvFilename: csvFile.name,
       csvBase64,
       finalize,
+      salesWeek1,
+      salesWeek2,
     });
     renderReport(res.data);
     const followUp = res.data.finalized
@@ -2243,6 +2305,25 @@ function renderReport(data) {
     show(driverAdviceWrap);
   } else if (driverAdviceWrap) {
     hide(driverAdviceWrap);
+  }
+
+  // Added 10/6/2026 (per Guapo) -- a short confirmation line when the
+  // Kitchen Manager and/or Supervisor bonus actually fired this period.
+  // Full audit detail (the window of weekly ratios, the average, the
+  // bracket) lives in the downloaded workbook's "Bonus Calc" sheet --
+  // this is just enough to confirm something happened without opening it.
+  const bonusEl = $("reportBonusMsg");
+  if (bonusEl) {
+    const paid = (summary.bonusesPaid || []).filter((b) => b.employee);
+    if (paid.length) {
+      bonusEl.textContent = paid
+        .map((b) => `${b.role} bonus: ${money(b.amount)} to ${b.employee} (avg ${money(b.avgRatio)}/kitchen-hr over ${b.windowWeeks} wk)`)
+        .join("  •  ");
+      show(bonusEl);
+    } else {
+      bonusEl.textContent = "";
+      hide(bonusEl);
+    }
   }
 
   show($("reportResults"));
