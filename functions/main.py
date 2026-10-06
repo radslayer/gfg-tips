@@ -556,7 +556,12 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     # own weeks twice). The collection is small (2 new docs per pay
     # period, ever) so this just reads it all and sorts/filters in
     # Python rather than needing a composite Firestore index.
-    week1_ending_str = (pay_date - timedelta(days=7)).strftime("%Y-%m-%d")
+    # Confirmed 10/6/2026 (per Guapo): paychecks go out the Friday SIX
+    # DAYS after the workweek that closes it ends (Sat), so this period's
+    # first week ends 13 days before pay_date (6 + 7), not 7 -- see
+    # report_builder's bonus section for the matching week2_ending/
+    # week1_ending math.
+    week1_ending_str = (pay_date - timedelta(days=13)).strftime("%Y-%m-%d")
     historical_weekly_ratios = []
     for doc in db.collection("weeklyBonusMetrics").stream():
         d = doc.to_dict()

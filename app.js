@@ -649,8 +649,14 @@ async function loadPeriod(payDate) {
 // Kitchen Manager/Supervisor bonus calc every period, tip week or not --
 // see report_builder.py's bonus section.
 async function updateBonusSalesFields(payDate) {
-  const week1Ending = addDaysToDateStr(payDate, -7);
-  const week2Ending = payDate;
+  // Confirmed 10/6/2026 (per Guapo): a workweek runs Sun-Sat, and the
+  // paycheck for a workweek that closes on a Saturday goes out the
+  // FOLLOWING Friday -- a 6-day lag. So pay_date (always a Friday) is 6
+  // days after the more recent covered week's Saturday close, and 13
+  // days after the earlier week's -- matches report_builder.py's bonus
+  // section exactly.
+  const week2Ending = addDaysToDateStr(payDate, -6);
+  const week1Ending = addDaysToDateStr(payDate, -13);
   $("salesWeek1Label").textContent = `Sales -- week ending ${formatShortDate(week1Ending)}`;
   $("salesWeek2Label").textContent = `Sales -- week ending ${formatShortDate(week2Ending)}`;
   $("salesWeek1").value = "";

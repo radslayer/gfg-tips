@@ -44,7 +44,7 @@ BREAKS_TABLE = [
 ]
 OT_THRESHOLD_HOURS = 40.0
 OT_MULTIPLIER = 1.5
-WORKWEEK_START_WEEKDAY = 5  # Saturday
+WORKWEEK_START_WEEKDAY = 6  # Sunday (confirmed 10/6/2026 per Guapo)
 
 MAN_DAY_FULL_THRESHOLD = 4.0
 MAN_DAY_FULL_CREDIT = 1.0
@@ -907,13 +907,15 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     }
 
     # -------- Kitchen Manager / Supervisor bonus --------
-    # This period's two calendar weeks (the second one always ends ON
-    # pay_date -- see PAY_DATE_ANCHOR's weekday in the module docstring --
-    # the first ends 7 days before it).
-    week2_start = week_start(pay_date)
-    week1_start = week2_start - timedelta(days=7)
-    week1_ending = pay_date - timedelta(days=7)
-    week2_ending = pay_date
+    # This period's two calendar weeks. Confirmed 10/6/2026 (per Guapo):
+    # a workweek runs Sunday-Saturday, and the paycheck for a workweek
+    # that closes on a Saturday goes out the FOLLOWING Friday -- a 6-day
+    # lag, not same-day. So pay_date (always a Friday) is 6 days AFTER
+    # the second covered workweek's Saturday close, not on it.
+    week2_ending = pay_date - timedelta(days=6)   # Saturday closing the more recent covered week
+    week1_ending = week2_ending - timedelta(days=7)  # Saturday closing the week before that
+    week2_start = week2_ending - timedelta(days=6)   # Sunday
+    week1_start = week1_ending - timedelta(days=6)   # Sunday
     kitchen_hours_by_week = compute_weekly_kitchen_hours(records, employees)
     kitchen_hours1 = kitchen_hours_by_week.get(week1_start, 0.0)
     kitchen_hours2 = kitchen_hours_by_week.get(week2_start, 0.0)
@@ -1075,7 +1077,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         "Man-Day Credit = 1.0 if worked >4 hrs that day, 0.5 if worked some but <=4 hrs, 0 if didn't work.",
     ])
     headers1 = ["Employee", "Date", "Day", "Punches That Day", "Hours Worked",
-                "Break Hrs Credited", "Paid Hours (Worked+Break)", "Man-Day Credit", "Week Start (Sat)"]
+                "Break Hrs Credited", "Paid Hours (Worked+Break)", "Man-Day Credit", "Week Start (Sun)"]
     for i, h in enumerate(headers1, start=1):
         ws1.cell(row=r1, column=i, value=h)
     style_header(ws1, r1, len(headers1))
@@ -1102,7 +1104,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     ws2 = wb.create_sheet("2 - Weekly Hours & Wages")
     r2 = title_block(ws2, "Weekly Hours & Wages", [
         f"Paid Hours pulled from {DAILY_SHEET}. Rate pulled from {CFG_SHEET}.",
-        "Workweek = Saturday-Friday, 40 hr/week overtime threshold, 1.5x OT multiplier.",
+        "Workweek = Sunday-Saturday, 40 hr/week overtime threshold, 1.5x OT multiplier.",
         "Period Totals block below sums every week in this upload -- these feed the ADP Entry sheet.",
     ])
     headers2 = ["Employee", "Week Start", "Week End", "Paid Hours", "Regular Hours",
