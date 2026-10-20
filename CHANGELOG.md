@@ -51,14 +51,14 @@ Last updated: 2026-10-20
   - Verified before deploy: py_compile clean, a full `build_report` dry
     run against Rod's real timeclock + orders files built a complete
     workbook with no errors.
-  - **Deployed to `gfg-tips` 10/20/2026** (`firebase deploy --only
-    functions --project gfg-tips`, run by Rod -- `generate_payroll_report`
-    confirmed as a real update, not a skipped no-op). **Frontend
-    (index.html/app.js) is NOT yet live** -- this app's frontend is
-    served by GitHub Pages (CNAME → tips.upshiftholdings.com), not
-    Firebase Hosting (there's no "hosting" key in firebase.json at all,
-    so `--only hosting` silently did nothing in Rod's deploy command).
-    Needs a git commit + push to go live; not done yet as of this entry.
+  - **Fully deployed 10/20/2026.** Backend via `firebase deploy --only
+    functions --project gfg-tips` (run by Rod -- `generate_payroll_report`
+    confirmed as a real update, not a skipped no-op). Frontend via git
+    commit `ad2a644` + `git push origin main` (run by Rod) -- this app's
+    frontend is served by GitHub Pages (CNAME → tips.upshiftholdings.com),
+    not Firebase Hosting (there's no "hosting" key in firebase.json at
+    all, so `--only hosting` silently did nothing in the deploy command).
+    GitHub Pages takes a minute or two to rebuild after a push.
   - **Not yet tested live** -- only tested via standalone script, direct
     function calls, and one full offline dry run. First real use should
     be a Preview run (Finalize unchecked), checking the new Sales Calc
@@ -149,10 +149,6 @@ Last updated: 2026-10-20
 - `bonus_data/` is untracked in git -- holding off on `git add`/commit
   until the Sales formula dispute (Open question 1) is settled, so a
   commit doesn't look like an endorsement of numbers under dispute.
-- Frontend (index.html/app.js) changes for the orders-CSV upload
-  feature are deployed to the working tree but NOT pushed to GitHub
-  Pages yet -- see Current state. The feature is backend-only-live
-  until this happens.
 - `.deploy-tools/` (a local Firebase CLI install, added 10/20 so Rod
   doesn't have to install it fresh each time) is gitignored -- don't
   commit it, it's ~100MB of node_modules.
@@ -165,10 +161,9 @@ Last updated: 2026-10-20
 
 ## Next steps
 
-- **Push the frontend to GitHub Pages** (git commit + push) so the new
-  Sales-upload toggle actually appears in the app -- not done yet.
 - **Run a Preview (Finalize unchecked) test** of the new orders-CSV
-  upload path on a real period before trusting it for a real Finalize.
+  upload path on a real period before trusting it for a real Finalize --
+  both halves are deployed now, this just hasn't been tried live yet.
 - Waiting on Rod's review of the Sales formula (Open question 1) --
   top priority, real money involved.
 - Resolve Open questions 2-3 with Rod as they come up.
