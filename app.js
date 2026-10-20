@@ -2054,6 +2054,21 @@ function readFileAsBase64(file) {
   });
 }
 
+// Added 10/20/2026 (per Guapo): toggle between typing Sales in by hand and
+// uploading the raw orders export instead -- shows/hides the matching fields.
+function updateSalesModeFields() {
+  const ordersMode = $("salesModeOrders").checked;
+  if (ordersMode) {
+    hide($("bonusSalesFields"));
+    show($("salesOrdersCsvWrap"));
+  } else {
+    show($("bonusSalesFields"));
+    hide($("salesOrdersCsvWrap"));
+  }
+}
+$("salesModeManual").addEventListener("change", updateSalesModeFields);
+$("salesModeOrders").addEventListener("change", updateSalesModeFields);
+
 $("generateReportBtn").addEventListener("click", async () => {
   setMsg($("reportMsg"), "", "");
   hide($("reportResults"));
@@ -2070,19 +2085,30 @@ $("generateReportBtn").addEventListener("click", async () => {
     return;
   }
   const finalize = $("reportFinalize").checked;
-  const salesWeek1Raw = $("salesWeek1").value;
-  const salesWeek2Raw = $("salesWeek2").value;
-  // Added 10/6/2026 (per Guapo) -- required whenever this run finalizes,
-  // since every period's two weeks feed the Kitchen Manager/Supervisor
-  // bonus history regardless of whether a bonus fires this period. A
-  // preview run (finalize unchecked) is allowed to leave them blank
-  // (defaults to $0) since nothing gets persisted anyway.
-  if (finalize && (salesWeek1Raw === "" || salesWeek2Raw === "")) {
-    setMsg($("reportMsg"), "Enter Sales for both weeks above before finalizing -- needed for the Kitchen Manager/Supervisor bonus history.", "error");
-    return;
+  const ordersMode = $("salesModeOrders").checked;
+
+  let salesWeek1 = 0, salesWeek2 = 0, ordersCsvFile = null;
+  if (ordersMode) {
+    ordersCsvFile = $("salesOrdersCsvFile").files[0];
+    if (finalize && !ordersCsvFile) {
+      setMsg($("reportMsg"), "Choose the raw orders export CSV before finalizing -- needed for the Kitchen Manager/Supervisor bonus history.", "error");
+      return;
+    }
+  } else {
+    const salesWeek1Raw = $("salesWeek1").value;
+    const salesWeek2Raw = $("salesWeek2").value;
+    // Added 10/6/2026 (per Guapo) -- required whenever this run finalizes,
+    // since every period's two weeks feed the Kitchen Manager/Supervisor
+    // bonus history regardless of whether a bonus fires this period. A
+    // preview run (finalize unchecked) is allowed to leave them blank
+    // (defaults to $0) since nothing gets persisted anyway.
+    if (finalize && (salesWeek1Raw === "" || salesWeek2Raw === "")) {
+      setMsg($("reportMsg"), "Enter Sales for both weeks above before finalizing -- needed for the Kitchen Manager/Supervisor bonus history.", "error");
+      return;
+    }
+    salesWeek1 = Number(salesWeek1Raw) || 0;
+    salesWeek2 = Number(salesWeek2Raw) || 0;
   }
-  const salesWeek1 = Number(salesWeek1Raw) || 0;
-  const salesWeek2 = Number(salesWeek2Raw) || 0;
 
   // Added 9/7/2026 (per Guapo): the checkbox now defaults to checked, so
   // the normal weekly action is one click that both produces the finished
@@ -2112,15 +2138,20 @@ $("generateReportBtn").addEventListener("click", async () => {
   setMsg($("reportMsg"), "Generating report... this can take a few seconds.", "");
   try {
     const csvBase64 = await readFileAsBase64(csvFile);
-    const call = httpsCallable(functions, "generate_payroll_report");
-    const res = await call({
+    const payload = {
       payPeriodId: currentPeriodId,
       csvFilename: csvFile.name,
       csvBase64,
       finalize,
       salesWeek1,
       salesWeek2,
-    });
+    };
+    if (ordersMode && ordersCsvFile) {
+      payload.ordersCsvFilename = ordersCsvFile.name;
+      payload.ordersCsvBase64 = await readFileAsBase64(ordersCsvFile);
+    }
+    const call = httpsCallable(functions, "generate_payroll_report");
+    const res = await call(payload);
     renderReport(res.data);
     const followUp = res.data.finalized
       ? ` ${res.data.finalizedCount} pending request(s) marked "on ${currentPeriodId}."`

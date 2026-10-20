@@ -285,6 +285,93 @@ def compute_weekly_kitchen_hours(records, employees):
     return dict(weekly)
 
 
+# ---------------------------------------------------------------------------
+# Sales from an uploaded orders export CSV (added 10/20/2026, per Guapo --
+# alternative to typing the two Sales $ numbers by hand; see
+# bonus_data/README.md and bonus_data/compute_weekly_sales.py, which this
+# ports -- keep the two in sync if the methodology changes again).
+# ---------------------------------------------------------------------------
+SALES_INCLUDED_STATUSES = {"Closed", "Unpaid"}
+SALES_DOCUMENTED_EXCLUDED_STATUSES = {"Tentative", "Refund Needed", "Payment Error"}
+SALES_COLUMNS = ["Subtotal", "Gratuity", "Discount", "Setup", "Delivery"]
+ORDERS_CSV_DATE_COL = "Event Timestamp (Date)"
+ORDERS_CSV_STATUS_COL = "Status"
+
+
+def compute_sales_from_orders_csv(csv_text, week1_start, week2_start):
+    """Computes Sales $ for each of this period's two calendar weeks from
+    a raw orders export CSV, bounding each week strictly by the order's
+    own Event Timestamp (Date) -- not by which export file it happened to
+    be in (confirmed 10/20/2026 this was NOT previously enforced in code).
+    Sales = Subtotal + Gratuity + Discount + Setup + Delivery (Surcharge
+    excluded -- credit-card-fee reimbursement, not kitchen-related).
+    Only Status "Closed"/"Unpaid" orders are included; "Tentative",
+    "Refund Needed", and "Payment Error" are documented exclusions
+    (Payment Error confirmed by Guapo 10/20/2026, "obviously not a
+    revenue event"). Any OTHER status is flagged in warnings and
+    excluded -- never silently included -- until confirmed.
+    Returns (sales_week1, sales_week2, warnings, audit) where audit is
+    {week_start_date: {...}} detail for the Sales Calc worksheet."""
+    reader = csv.DictReader(io.StringIO(csv_text))
+    try:
+        rows = list(reader)
+    except csv.Error as e:
+        raise ReportError(f"Couldn't read the orders CSV: {e}")
+    if reader.fieldnames and ORDERS_CSV_DATE_COL not in reader.fieldnames:
+        raise ReportError(
+            f"The orders CSV doesn't have a '{ORDERS_CSV_DATE_COL}' column -- "
+            "is this the right export? Columns found: " + ", ".join(reader.fieldnames)
+        )
+    warnings = []
+    audit = {}
+
+    def week_sales(week_start):
+        week_end = week_start + timedelta(days=6)
+        included, excluded_known, excluded_unknown = [], [], {}
+        for r in rows:
+            raw_date = (r.get(ORDERS_CSV_DATE_COL) or "").strip()
+            try:
+                d = datetime.strptime(raw_date, "%Y-%m-%d")
+            except ValueError:
+                continue
+            if not (week_start <= d <= week_end):
+                continue
+            status = (r.get(ORDERS_CSV_STATUS_COL) or "").strip()
+            if status in SALES_INCLUDED_STATUSES:
+                included.append(r)
+            elif status in SALES_DOCUMENTED_EXCLUDED_STATUSES:
+                excluded_known.append(r)
+            else:
+                excluded_unknown.setdefault(status, []).append(r)
+        totals = {col: 0.0 for col in SALES_COLUMNS}
+        for r in included:
+            for col in SALES_COLUMNS:
+                raw = (r.get(col) or "0").strip() or "0"
+                try:
+                    totals[col] += float(raw.replace(",", ""))
+                except ValueError:
+                    pass
+        sales = sum(totals.values())
+        if excluded_unknown:
+            for status, recs in excluded_unknown.items():
+                warnings.append(
+                    f"Orders CSV: {len(recs)} order(s) in the week of {week_start:%m/%d/%Y} "
+                    f"have an undocumented Status '{status}' -- excluded from Sales, not "
+                    "auto-included. Confirm with Guapo whether this status is revenue."
+                )
+        audit[week_start] = {
+            "week_start": week_start, "week_end": week_end,
+            "included_count": len(included), "totals": totals, "sales": sales,
+            "excluded_known_count": len(excluded_known),
+            "excluded_unknown": {k: len(v) for k, v in excluded_unknown.items()},
+        }
+        return sales
+
+    sales1 = week_sales(week1_start)
+    sales2 = week_sales(week2_start)
+    return sales1, sales2, warnings, audit
+
+
 def is_last_payroll_of_month(pay_date):
     """True if the NEXT biweekly pay date (14 days later) falls in a
     different calendar month -- i.e. this is the last payroll run within
@@ -645,7 +732,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                   pending_pto, pending_purchases, pending_misc_amt,
                   pending_misc_reimb, sister_map=None, prior_driver_info=None,
                   prior_w2_man_days=None, contract_labor=None,
-                  sales_week1=0.0, sales_week2=0.0, historical_weekly_ratios=None):
+                  sales_week1=0.0, sales_week2=0.0, historical_weekly_ratios=None,
+                  orders_csv_text=None, orders_csv_name="orders.csv"):
     """employees/order: same shape as before (dict name -> {department,
     rate, tip_eligible}, plus the name order list).
 
@@ -916,6 +1004,16 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     week1_ending = week2_ending - timedelta(days=7)  # Saturday closing the week before that
     week2_start = week2_ending - timedelta(days=6)   # Sunday
     week1_start = week1_ending - timedelta(days=6)   # Sunday
+
+    # Added 10/20/2026 (per Guapo): an uploaded orders CSV is an alternative
+    # to typing the two Sales $ numbers by hand -- when given, it OVERRIDES
+    # whatever sales_week1/sales_week2 were passed in.
+    sales_audit = None
+    if orders_csv_text:
+        sales_week1, sales_week2, sales_warnings, sales_audit = compute_sales_from_orders_csv(
+            orders_csv_text, week1_start, week2_start)
+        warnings.extend(sales_warnings)
+
     kitchen_hours_by_week = compute_weekly_kitchen_hours(records, employees)
     kitchen_hours1 = kitchen_hours_by_week.get(week1_start, 0.0)
     kitchen_hours2 = kitchen_hours_by_week.get(week2_start, 0.0)
@@ -1407,6 +1505,56 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             cell.number_format = ADP_ACCOUNTING_FORMAT
     for col_name, width in ADP_COLUMN_WIDTHS.items():
         ws5.column_dimensions[get_column_letter(col_index[col_name])].width = width
+
+    # ---- Sales Calc (added 10/20/2026, only when Sales came from an
+    # uploaded orders CSV rather than being typed in by hand) ----
+    if sales_audit:
+        ws_sc = wb.create_sheet("Sales Calc")
+        r_sc = title_block(ws_sc, "Sales -- computed from uploaded orders export", [
+            f"Source: {orders_csv_name} (raw orders export, uploaded for this report).",
+            "Sales = Subtotal + Gratuity + Discount + Setup + Delivery (Surcharge excluded).",
+            "Only orders with Status \"Closed\" or \"Unpaid\" are included. \"Tentative\", "
+            "\"Refund Needed\", and \"Payment Error\" are excluded. Any other status is "
+            "flagged in the warnings banner above, not silently included.",
+            "Each week is bounded by the order's own Event Timestamp (Date), regardless of "
+            "what date range the uploaded file itself covered.",
+        ])
+        headers = ["Week", "Date Range Enforced", "Orders Included", "Subtotal", "Gratuity",
+                   "Discount", "Setup", "Delivery", "Total Sales", "Excluded (documented)"]
+        for i, h in enumerate(headers, start=1):
+            ws_sc.cell(row=r_sc, column=i, value=h)
+        style_header(ws_sc, r_sc, len(headers))
+        r_sc += 1
+        for label, wk_start in [("Week 1", week1_start), ("Week 2", week2_start)]:
+            a = sales_audit.get(wk_start)
+            if not a:
+                continue
+            vals = [
+                label,
+                f'{a["week_start"]:%m/%d/%Y} - {a["week_end"]:%m/%d/%Y}',
+                a["included_count"],
+                a["totals"]["Subtotal"], a["totals"]["Gratuity"], a["totals"]["Discount"],
+                a["totals"]["Setup"], a["totals"]["Delivery"], a["sales"],
+                a["excluded_known_count"],
+            ]
+            for i, v in enumerate(vals, start=1):
+                cell = ws_sc.cell(row=r_sc, column=i, value=v)
+                cell.font = INPUT_FONT
+                cell.border = THIN
+                if i in (4, 5, 6, 7, 8, 9):
+                    cell.number_format = "$#,##0.00"
+            r_sc += 1
+        r_sc += 1
+        any_unknown = any(a.get("excluded_unknown") for a in sales_audit.values())
+        if any_unknown:
+            ws_sc.cell(row=r_sc, column=1, value="Undocumented statuses found (see warnings banner above):").font = BOLD_FONT
+            r_sc += 1
+            for wk_start, a in sales_audit.items():
+                for status, count in a.get("excluded_unknown", {}).items():
+                    ws_sc.cell(row=r_sc, column=1,
+                               value=f'  Week of {wk_start:%m/%d/%Y}: {count} order(s) with Status "{status}"').font = NOTE_FONT
+                    r_sc += 1
+        autosize(ws_sc)
 
     # ---- Bonus Calc (Kitchen Manager / Supervisor) ----
     ws_bc = wb.create_sheet("Bonus Calc")

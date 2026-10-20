@@ -703,6 +703,18 @@
         <div id="savedReportMsg" class="msg"></div>
       </div>
 
+      <div class="field" style="margin-bottom:10px;">
+        <label style="margin-bottom:4px;">Sales for this period's two weeks</label>
+        <div class="checkbox-row">
+          <input type="radio" name="salesMode" id="salesModeManual" value="manual" checked />
+          <label for="salesModeManual" style="margin:0;">Enter manually</label>
+        </div>
+        <div class="checkbox-row">
+          <input type="radio" name="salesMode" id="salesModeOrders" value="orders" />
+          <label for="salesModeOrders" style="margin:0;">Upload the raw orders export instead</label>
+        </div>
+      </div>
+
       <div class="row" id="bonusSalesFields">
         <div class="field">
           <label for="salesWeek1" id="salesWeek1Label">Sales -- week 1</label>
@@ -713,9 +725,20 @@
           <input type="number" step="0.01" min="0" id="salesWeek2" />
         </div>
       </div>
+      <div class="field hidden" id="salesOrdersCsvWrap">
+        <label for="salesOrdersCsvFile">Raw orders export (.csv) -- covering at least this period's two weeks</label>
+        <input type="file" id="salesOrdersCsvFile" accept=".csv" />
+        <div class="small" style="margin-top:6px;">
+          Only orders with Status "Closed" or "Unpaid", dated within each of this period's
+          own two weeks, are counted -- any wider date range in the file you upload is fine,
+          everything outside this period's weeks is ignored. The generated workbook's new
+          "Sales Calc" sheet shows exactly which orders were included and why.
+        </div>
+      </div>
       <div class="small" style="margin-bottom:14px;">
         Needed every period (tip week or not) to keep the Kitchen Manager/Supervisor bonus
-        history current -- see the new "Bonus Calc" sheet in the generated workbook.
+        history current -- see the "Bonus Calc" sheet (and "Sales Calc," when Sales came
+        from an uploaded orders export) in the generated workbook.
       </div>
 
       <div class="field">

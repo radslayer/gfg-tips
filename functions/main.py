@@ -447,6 +447,12 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     # Kitchen Manager/Supervisor bonus calc in report_builder.build_report.
     sales_week1 = float(data.get("salesWeek1") or 0)
     sales_week2 = float(data.get("salesWeek2") or 0)
+    # Added 10/20/2026 (per Guapo): an alternative to typing the two Sales $
+    # numbers by hand -- upload the raw orders export instead and
+    # report_builder.compute_sales_from_orders_csv derives them, bounded to
+    # this period's own two weeks. When given, this OVERRIDES salesWeek1/2.
+    orders_csv_b64 = data.get("ordersCsvBase64")
+    orders_csv_name = data.get("ordersCsvFilename") or "orders.csv"
 
     if not pay_period_id:
         raise https_fn.HttpsError(
@@ -455,6 +461,21 @@ def generate_payroll_report(req: https_fn.CallableRequest):
         raise https_fn.HttpsError(
             https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
             "The raw timeclock CSV is required.")
+    if finalize and not orders_csv_b64 and not (sales_week1 or sales_week2):
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+            "Enter this period's two Sales $ figures, or upload the orders "
+            "export CSV instead, before finalizing -- needed for the Kitchen "
+            "Manager/Supervisor bonus history. A preview run may leave both blank.")
+
+    orders_csv_text = None
+    if orders_csv_b64:
+        try:
+            orders_csv_text = base64.b64decode(orders_csv_b64).decode("utf-8-sig")
+        except Exception as e:
+            raise https_fn.HttpsError(
+                https_fn.FunctionsErrorCode.INVALID_ARGUMENT,
+                f"Couldn't read the orders CSV file: {e}")
 
     try:
         pay_date = datetime.strptime(pay_period_id, "%Y-%m-%d")
@@ -593,6 +614,8 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             sales_week1=sales_week1,
             sales_week2=sales_week2,
             historical_weekly_ratios=historical_weekly_ratios,
+            orders_csv_text=orders_csv_text,
+            orders_csv_name=orders_csv_name,
         )
     except report_builder.ReportError as e:
         raise https_fn.HttpsError(https_fn.FunctionsErrorCode.INVALID_ARGUMENT, str(e))
