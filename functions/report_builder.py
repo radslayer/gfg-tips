@@ -78,6 +78,20 @@ SALARIED_TEMPLATE_ROWS = [
 # requests on himself through this app) and this list is one less thing to
 # touch on an already-working row.
 
+# Rod is ALSO a normal Firestore `employees` doc now ("Rod Salyer",
+# Salaried, Department M) -- confirmed 10/23/2026 it was created at some
+# point after the comment above was written, for reasons unrelated to this
+# sheet (per Guapo, he doesn't track PTO/Employee Purchases/Misc Amounts
+# for himself, and his real Salary Amount and 2% S-Corp Medical are
+# hardwired directly into his ADP profile -- not read from this report by
+# anyone -- so neither row needs real numbers for those columns). Without
+# this skip-list, the normal employee loop below would ALSO emit a row for
+# "Rod Salyer", giving him two rows on the sheet for the same real person.
+# The hardcoded template above stays authoritative (it already has his
+# ADP-confirmed "Salyer, Rod" display name/sort key); the Firestore-driven
+# row for the name(s) below is suppressed rather than written twice.
+TEMPLATE_COVERED_FIRESTORE_NAMES = {"Rod Salyer"}
+
 HEADER_FILL = PatternFill("solid", fgColor="1F4E5F")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 ADP_ACCOUNTING_FORMAT = r'_(* #,##0.00_);_(* \(#,##0.00\);_(* "-"??_);_(@_)'
@@ -176,7 +190,7 @@ ROD_ROW_NAME = "Rod"
 # exactly a multiple of 14 days from this one -- used to tell which
 # calendar-month pay period a run is (1st/2nd/3rd) for the rule below.
 PAY_DATE_ANCHOR = datetime(2026, 7, 17)
-ROD_MEDICAL_AMOUNT = 677.12       # every pay period...
+ROD_MEDICAL_AMOUNT = 781.29       # every pay period...
 ROD_MEDICAL_THIRD_PERIOD = 0.0    # ...EXCEPT the 3rd biweekly pay date in a calendar month
 
 
@@ -851,10 +865,43 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     contract_labor = dict(contract_labor or {})
     contract_labor_hours = compute_contract_labor_hours(records, contract_labor)
     unknown_names = [n for n in unknown_names if n not in contract_labor]
-    if unknown_names:
+    # Hours per unmatched name, computed once and reused below both for
+    # the warning text and for the structured summary field the frontend's
+    # "Unknown timeclock names" action panel (Add as employee/alias/
+    # Contract Labor) reads -- added 10/23/2026 (per Guapo) so that panel
+    # also shows real hours instead of just a bare name.
+    unknown_hours = defaultdict(float)
+    for rec_name, rec_date, rec_amt in records:
+        if rec_name in unknown_names:
+            unknown_hours[rec_name] += rec_amt
+    # Split "nobody's told this app about this name at all" from "on the
+    # roster but missing a rate" -- the latter already gets its own,
+    # correctly-worded warning below (rate_missing_names), keyed off the
+    # Employees tab rather than the timeclock. Conflating the two here
+    # would wrongly tell Rod someone IS on the roster is NOT on the roster.
+    truly_unknown_names = [n for n in unknown_names if n not in employees]
+    if truly_unknown_names:
+        # Added 10/23/2026 (per Guapo): "always assume the timeclock import
+        # is right" -- a name this app doesn't recognize (new hire not on
+        # the Employees tab yet, a timeclock spelling that doesn't match a
+        # roster/alias entry, a punch for someone who should've been added)
+        # must NEVER just silently fall out of the report. This warning
+        # carries each unmatched name's actual hours from the timeclock
+        # (not just the bare name) specifically so whoever reads it can pay
+        # them correctly by hand this period without having to go re-derive
+        # the hours from the raw export themselves.
+        unknown_detail = ", ".join(
+            f"{n} ({unknown_hours[n]:.2f} hrs)" for n in truly_unknown_names
+        )
         warnings.append(
-            "These names appear in the timeclock export but have no wage rate "
-            "on file, so their hours are not in this report: " + ", ".join(unknown_names)
+            "TIMECLOCK NAME(S) NOT ON YOUR ROSTER -- these people will NOT "
+            "be paid by this report unless you handle it manually: " +
+            unknown_detail + ". Each worked real hours this period per the "
+            "timeclock export, which this app always trusts over its own "
+            "roster. Either add them to the Employees tab (name, department, "
+            "rate) and re-run before finalizing, or pay them directly in "
+            "ADP by hand using the hours above -- do not assume this is a "
+            "timeclock error without checking."
         )
     contract_labor_rate_missing = sorted(
         name for name, info in contract_labor_hours.items() if info.get("rate") is None
@@ -1463,11 +1510,28 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 cell.value = ded_lookup(DED_COLS[col_name], name_key)
         return r
 
+    # Row order: Managers, then Office, then Kitchen -- then alphabetical
+    # by LAST name within each group -- added 10/23/2026 (per Guapo) to
+    # match how ADP's own "Enter payroll" screen is grouped/sorted, so the
+    # two are easy to cross-check side by side. Collect every row this
+    # sheet will write as a spec first, sort the specs, THEN call
+    # write_row in that order -- write_row appends to the next sheet row
+    # each time it's called, so sorting the call order is what sorts the
+    # sheet.
+    row_specs = []
     for template in SALARIED_TEMPLATE_ROWS:
-        write_row(template["Name"], SALARIED_NA_COLUMNS, True,
-                  department_literal=template["Department"],
-                  display_name_literal=template.get("AdpName"))
+        row_specs.append({
+            "kind": "template", "template": template,
+            "department": template["Department"],
+            "sort_name": template.get("AdpName") or template["Name"],
+        })
     for name in order:
+        if name in TEMPLATE_COVERED_FIRESTORE_NAMES:
+            # Already covered by a SALARIED_TEMPLATE_ROWS entry under a
+            # different hardcoded working name -- see the comment on
+            # TEMPLATE_COVERED_FIRESTORE_NAMES above. Skip entirely so this
+            # sheet never gets two rows for the same real person.
+            continue
         if employees[name].get("salaried"):
             # Firestore-backed salaried employee (e.g. Mike, added
             # 9/7/2026) -- one salaried-shaped row, department pulled live
@@ -1475,14 +1539,57 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
             # hardcoded literal. Never combine this with the hourly branch
             # below for the same person, or they'd get two rows and their
             # PTO/deductions would double-count in the Totals row.
-            write_row(name, SALARIED_NA_COLUMNS, True)
+            row_specs.append({
+                "kind": "salaried", "name": name,
+                "department": employees[name]["department"],
+                "sort_name": employees[name].get("adp_name") or name,
+            })
             continue
         if employees[name]["rate"] is None:
             # No hourly rate on file and not marked Salaried -- flagged
             # separately via rate_missing_names above rather than writing
             # a broken all-zero row here.
             continue
-        write_row(name, HOURLY_NA_COLUMNS, False)
+        row_specs.append({
+            "kind": "hourly", "name": name,
+            "department": employees[name]["department"],
+            "sort_name": employees[name].get("adp_name") or name,
+        })
+
+    def _last_name_key(sort_name):
+        # ADP's own "Last, First" (or "Last Surname2, First") convention
+        # puts the real sort key before the first comma -- use that
+        # directly when it's available (an "ADP name" confirmed on the
+        # Employees tab, or SALARIED_TEMPLATE_ROWS's hardcoded AdpName),
+        # since that's literally what ADP itself sorts by, compound
+        # surnames (e.g. "Gomez Garcia, Alejandro") included. Falls back
+        # to the LAST whitespace-separated token of the app's own
+        # "First Last" working name when no comma-formatted name is on
+        # file yet -- an approximation, not exact for an unconfirmed
+        # compound surname, but far closer than sorting by first name.
+        if "," in sort_name:
+            return sort_name.split(",", 1)[0].strip().lower()
+        parts = sort_name.strip().split()
+        return (parts[-1] if parts else sort_name).lower()
+
+    DEPT_SORT_ORDER = {"M": 0, "O": 1, "K": 2}
+    row_specs.sort(
+        key=lambda s: (
+            DEPT_SORT_ORDER.get(s["department"], len(DEPT_SORT_ORDER)),
+            _last_name_key(s["sort_name"]),
+        )
+    )
+
+    for spec in row_specs:
+        if spec["kind"] == "template":
+            t = spec["template"]
+            write_row(t["Name"], SALARIED_NA_COLUMNS, True,
+                      department_literal=t["Department"],
+                      display_name_literal=t.get("AdpName"))
+        elif spec["kind"] == "salaried":
+            write_row(spec["name"], SALARIED_NA_COLUMNS, True)
+        else:
+            write_row(spec["name"], HOURLY_NA_COLUMNS, False)
 
     first_data_row = 2
     last_data_row = ws5.max_row
@@ -1900,7 +2007,11 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         # company alias" action per name, added 9/3/2026 per Rod -- these
         # are exactly the names already excluded from this report, listed
         # in the plain-text warning above.
-        "unknownTimeclockNames": unknown_names,
+        # List of {name, hours} (not bare names) as of 10/23/2026, so
+        # the frontend's action panel shows real hours too, not just who.
+        "unknownTimeclockNames": [
+            {"name": n, "hours": round(unknown_hours[n], 2)} for n in unknown_names
+        ],
         # Persisted by main.py (on finalize) into the `weeklyBonusMetrics`
         # collection -- the durable history both the Kitchen Manager (4-wk
         # trailing) and Supervisor (quarterly) windows read from on future

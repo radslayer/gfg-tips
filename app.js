@@ -2210,14 +2210,22 @@ Continue?`
 // always a judgment call -- so this doesn't guess; it just jumps straight
 // to the right pre-filled form either way, instead of making Rod retype
 // the name after hunting through the Employees tab himself.
-function renderUnknownTimeclockNames(names) {
+function renderUnknownTimeclockNames(entries) {
+  // Added 10/23/2026 (per Guapo): entries are now {name, hours} objects,
+  // not bare name strings, so this panel -- same one with the one-click
+  // Add as employee/alias/Contract Labor buttons -- shows real hours
+  // too. Still accepts a bare-string array defensively (older cached
+  // response shape) so this never throws if something upstream hasn't
+  // redeployed yet.
   const container = $("reportUnknownNames");
   container.innerHTML = "";
-  if (!names.length) {
+  if (!entries.length) {
     hide(container);
     return;
   }
-  names.forEach((name) => {
+  entries.forEach((entry) => {
+    const name = typeof entry === "string" ? entry : entry.name;
+    const hours = typeof entry === "string" ? null : entry.hours;
     const row = document.createElement("div");
     row.className = "req-row";
 
@@ -2226,7 +2234,7 @@ function renderUnknownTimeclockNames(names) {
 
     const title = document.createElement("span");
     title.className = "req-row-title";
-    title.textContent = name;
+    title.textContent = hours == null ? name : `${name} (${hours.toFixed(2)} hrs)`;
     top.appendChild(title);
 
     const actions = document.createElement("span");
