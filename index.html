@@ -301,7 +301,7 @@
         <label for="payDate">Pay date</label>
         <select id="payDate"></select>
       </div>
-      <div class="small">Every biweekly payroll date -- starts on the next one that hasn't been submitted yet. Choosing a date loads that period if it already exists, or starts a new one.</div>
+      <div class="small">Every biweekly payroll date -- starts on the next upcoming one (as of today) that hasn't been submitted yet. Choosing a date loads that period if it already exists, or starts a new one.</div>
       <div id="periodStatus" style="margin-top:10px;"></div>
     </div>
 
@@ -777,14 +777,19 @@
           automatically). Deliveries $ Total / Setups $ Total are each driver's
           own already-added-up dollar total for the period, entered on the Tip
           Pool tab (not a count -- different deliveries/setups pay different
-          amounts).
+          amounts). Employee Purchases (added 11/2/2026) comes from the same
+          Employee Purchase requests W2 staff use, logged against the driver's
+          name instead -- Total = Tips + Deliveries $ Total + Setups $ Total -
+          Employee Purchases, and can go negative if purchases exceeded what
+          the driver earned this period (see the warnings banner).
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Driver</th><th>Days driven</th><th>Tip payout</th>
-                <th>Tips</th><th>Deliveries $ Total</th><th>Setups $ Total</th><th>Total</th>
+                <th>Tips</th><th>Deliveries $ Total</th><th>Setups $ Total</th>
+                <th>Employee Purchases</th><th>Total</th>
               </tr>
             </thead>
             <tbody id="reportDriverRows"></tbody>

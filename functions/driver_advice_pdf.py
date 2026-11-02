@@ -44,6 +44,10 @@ from reportlab.platypus import (
 GFG_NAVY = colors.HexColor("#2B3C5E")
 GFG_NAVY_LIGHT = colors.HexColor("#EEF1F6")
 GFG_GRAY = colors.HexColor("#6B7280")
+# Added 11/2/2026 (per Guapo) -- a negative Total (purchases exceeded
+# earnings this period) is visually distinct from a normal payout, same
+# idea as a bank statement showing a negative balance in red.
+NEGATIVE_RED = colors.HexColor("#B3261E")
 
 _FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 _FONTS_REGISTERED = False
@@ -117,20 +121,50 @@ def _fmt_pay_date(pay_period_id):
         return pay_period_id
 
 
+def _fmt_item_date(date_str):
+    """A purchase record's own 'date' field is a plain YYYY-MM-DD string
+    (same as the request form's date input) -- render it the short way,
+    e.g. 11/5/2026, distinct from _fmt_pay_date's full pay-period style."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").strftime("%-m/%-d/%Y")
+    except (ValueError, TypeError):
+        return date_str or ""
+
+
 def build_driver_advice_pdf(driver_name, pay_period_id, tips, deliveries, setups,
+                             ee_purchases=0, ee_purchase_items=None,
                              review_email="getinfo@gourmetforgood.com"):
     """Returns PDF bytes for one driver's payment advice.
 
     tips/deliveries/setups are dollar totals (not counts) -- same meaning
     as the "Driver Payroll (1099s) Recap" sheet's columns. Total is
     computed here, never passed in, so it can never drift from the sum.
+
+    ee_purchases/ee_purchase_items (added 11/2/2026, per Guapo): Employee
+    Purchase(s) logged against this driver this period -- same deduction
+    already applied on the Contractors Payments sheet (see
+    report_builder.build_report). ee_purchase_items is the individual
+    {product, costPerUnit, units, amount, date} records; when there's
+    more than one, each gets its OWN line (per Guapo, "itemize the
+    employee purchases if there are more than one on this report, rather
+    than aggregating them") instead of one combined figure. With zero or
+    one purchase this period, it's a single "Employee Purchases" line,
+    same as before multi-item support existed. Total is allowed to go
+    negative -- NOT floored at $0 (per Guapo, "you can generate the
+    report and show a negative balance with an explanation of why") --
+    with an explanatory line appended when it is. This is the one
+    document that goes straight to the driver, so it must never show a
+    number that doesn't match what they're actually paid.
     """
     _register_fonts()
 
     tips = round(float(tips or 0), 2)
     deliveries = round(float(deliveries or 0), 2)
     setups = round(float(setups or 0), 2)
-    total = round(tips + deliveries + setups, 2)
+    ee_purchases = round(float(ee_purchases or 0), 2)
+    ee_purchase_items = ee_purchase_items or []
+    gross_total = round(tips + deliveries + setups, 2)
+    total = round(gross_total - ee_purchases, 2)
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -172,25 +206,38 @@ def build_driver_advice_pdf(driver_name, pay_period_id, tips, deliveries, setups
     story.append(meta_table)
     story.append(Spacer(1, 0.4 * inch))
 
-    # The recap table itself, styled like a simple statement -- three line
-    # items then a visually distinct Total row.
-    rows = [
-        ["Tips", _currency(tips)],
-        ["Deliveries", _currency(deliveries)],
-        ["Setups", _currency(setups)],
-        ["Total", _currency(total)],
-    ]
+    # The recap table itself, styled like a simple statement -- three
+    # line items, then zero or more Employee Purchases lines, then a
+    # visually distinct Total row (which can go negative -- see below).
+    # Employee Purchases shown as a negative figure (via _currency's
+    # existing sign handling), same placement/meaning as the Contractors
+    # Payments sheet column -- itemized (one line per purchase, labeled
+    # with its product) when there's more than one this period, or a
+    # single combined line otherwise, same as before itemizing existed.
+    rows = [["Tips", _currency(tips)], ["Deliveries", _currency(deliveries)],
+            ["Setups", _currency(setups)]]
+    if len(ee_purchase_items) > 1:
+        for item in ee_purchase_items:
+            label = "Employee Purchase - " + (item.get("product") or "Purchase")
+            date_str = _fmt_item_date(item.get("date"))
+            if date_str:
+                label += f" ({date_str})"
+            rows.append([label, _currency(-round(float(item.get("amount") or 0), 2))])
+    elif ee_purchases:
+        rows.append(["Employee Purchases", _currency(-ee_purchases)])
+    rows.append(["Total", _currency(total)])
+    last_row = len(rows) - 1
     recap = Table(rows, colWidths=[5.7 * inch, 1.5 * inch])
     recap.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 2), "Montserrat"),
-        ("FONTSIZE", (0, 0), (-1, 2), 11),
-        ("FONTNAME", (0, 3), (-1, 3), "Montserrat-Bold"),
-        ("FONTSIZE", (0, 3), (-1, 3), 13),
-        ("TEXTCOLOR", (0, 3), (-1, 3), GFG_NAVY),
+        ("FONTNAME", (0, 0), (-1, last_row - 1), "Montserrat"),
+        ("FONTSIZE", (0, 0), (-1, last_row - 1), 11),
+        ("FONTNAME", (0, last_row), (-1, last_row), "Montserrat-Bold"),
+        ("FONTSIZE", (0, last_row), (-1, last_row), 13),
+        ("TEXTCOLOR", (0, last_row), (-1, last_row), NEGATIVE_RED if total < 0 else GFG_NAVY),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-        ("LINEBELOW", (0, 0), (-1, 2), 0.5, colors.HexColor("#DADFE6")),
-        ("LINEABOVE", (0, 3), (-1, 3), 1.2, GFG_NAVY),
-        ("BACKGROUND", (0, 3), (-1, 3), GFG_NAVY_LIGHT),
+        ("LINEBELOW", (0, 0), (-1, last_row - 1), 0.5, colors.HexColor("#DADFE6")),
+        ("LINEABOVE", (0, last_row), (-1, last_row), 1.2, GFG_NAVY),
+        ("BACKGROUND", (0, last_row), (-1, last_row), GFG_NAVY_LIGHT),
         ("TOPPADDING", (0, 0), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ("LEFTPADDING", (0, 0), (-1, -1), 14),
@@ -204,6 +251,35 @@ def build_driver_advice_pdf(driver_name, pay_period_id, tips, deliveries, setups
         ("RIGHTPADDING", (0, 0), (-1, -1), 0.4 * inch),
     ]))
     story.append(wrapper)
+
+    # Added 11/2/2026 (per Guapo, "show a negative balance with an
+    # explanation of why"): plain-language reason for the negative Total,
+    # right under the recap table where it's impossible to miss -- not
+    # buried in the generic footer below. Deliberately does NOT say how/
+    # when the shortfall will be collected -- that's a conversation
+    # between Guapo and the driver, not something to presume in an
+    # auto-generated, auto-distributed PDF.
+    if total < 0:
+        explain_style = ParagraphStyle(
+            "explain", fontName="Montserrat-Bold", fontSize=10,
+            textColor=NEGATIVE_RED, leading=14,
+        )
+        explain_table = Table(
+            [[Paragraph(
+                f"Employee Purchases this period exceeded total earnings "
+                f"by {_currency(abs(total))}.",
+                explain_style,
+            )]],
+            colWidths=[7.2 * inch],
+        )
+        explain_table.setStyle(TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 0.4 * inch),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0.4 * inch),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(explain_table)
+
     story.append(Spacer(1, 0.5 * inch))
 
     footer_lines = [

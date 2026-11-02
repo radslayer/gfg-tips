@@ -287,7 +287,13 @@ let finalizedPayrollDatesSet = new Set(); // Added 9/8/2026 (per Guapo): pay dat
 const $ = (id) => document.getElementById(id);
 const show = (el) => el.classList.remove("hidden");
 const hide = (el) => el.classList.add("hidden");
-const money = (n) => "$" + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Added 11/2/2026 (per Guapo): a driver's Total can now go negative
+// (Employee Purchases exceeding what they earned) -- show it the normal
+// "-$X.XX" way instead of toLocaleString's "$-X.XX".
+const money = (n) => {
+  const v = Number(n) || 0;
+  return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 
 function setMsg(el, text, kind) {
   el.textContent = text || "";
@@ -493,9 +499,19 @@ onAuthStateChanged(auth, async (user) => {
       "roles/" + user.uid + " document in Firestore.", "error");
   }
 
-  // Default the dropdown to the earliest period that hasn't been
-  // submitted yet -- only figure this out once per session, so we don't
-  // yank the user back to it if they've since picked a different date.
+  // Default the dropdown to the next upcoming payroll date as of today
+  // (fixed 11/2/2026, per Guapo -- the old version picked the earliest
+  // period that simply hadn't been marked "submitted" in Firestore yet,
+  // scanning from PAY_PERIOD_DISPLAY_FLOOR forward. That drifts wrong:
+  // if any one period along the way was never explicitly marked
+  // submitted -- skipped, or its status write failed/was forgotten --
+  // the dropdown gets stuck defaulting back to that old date forever,
+  // regardless of how far today has actually moved on. "Nearly every
+  // time we're running this on a Monday, it's for the following
+  // Friday's payroll," so the default should be anchored to today's
+  // real date, not to Firestore submission bookkeeping). Only figure
+  // this out once per session, so we don't yank the user back to it if
+  // they've since picked a different date.
   if (!periodDefaultChosen) {
     periodDefaultChosen = true;
     const defaultDate = await pickDefaultPeriod();
@@ -516,6 +532,15 @@ async function pickDefaultPeriod() {
     // If this fails for some reason, fall back to the very first period
     // rather than leaving the dropdown unset.
   }
+  // Anchor to today's actual date first: the earliest scheduled payroll
+  // date on or after today that hasn't been submitted yet. Falls back to
+  // the old "earliest unsubmitted, period" behavior only in the
+  // vanishingly unlikely case every upcoming date is somehow already
+  // submitted (e.g. someone's submitted several periods ahead), so the
+  // dropdown still never defaults to a finalized date.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const upcoming = PAY_PERIOD_DATES.find((dt) => dt >= todayStr && !submitted.has(dt));
+  if (upcoming) return upcoming;
   return PAY_PERIOD_DATES.find((dt) => !submitted.has(dt)) || PAY_PERIOD_DATES[PAY_PERIOD_DATES.length - 1];
 }
 
@@ -885,7 +910,24 @@ function populateEmployeeDropdown() {
     opt.textContent = e.name;
     sel.appendChild(opt);
   });
-  if (prevValue && employeesCache.some((e) => e.name === prevValue)) sel.value = prevValue;
+  // Added 11/2/2026 (per Guapo): a 1099 driver can rack up an Employee
+  // Purchase too ("reduce their 1099 payout by the amount"), so this
+  // dropdown also offers driver names -- but ONLY while Employee Purchase
+  // is the selected request type. Drivers aren't real `employees` roster
+  // entries (no W2 wages, no PTO, no ADP row), so they stay out of this
+  // list for every other request type (PTO/Misc Amount/Misc Reimb), none
+  // of which apply to a 1099 contractor. DEFAULT_DRIVERS is the same list
+  // already used to seed the Tip Pool tab's driver rows -- a genuinely
+  // new driver needs adding there too, same as today.
+  if ($("reqType") && $("reqType").value === "employeePurchases") {
+    DEFAULT_DRIVERS.forEach((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name + " (driver)";
+      sel.appendChild(opt);
+    });
+  }
+  if (prevValue && [...sel.options].some((o) => o.value === prevValue)) sel.value = prevValue;
 }
 
 function renderEmployeeRows() {
@@ -1393,6 +1435,7 @@ $("reqType").addEventListener("change", () => {
   updateReqAmountLabel();
   updateReqDateFields();
   updateReqPurchaseFields();
+  populateEmployeeDropdown();
 });
 updateReqAmountLabel();
 updateReqDateFields();
@@ -1800,7 +1843,12 @@ function renderPendingAlerts(pendingRows, finalizedDates) {
     // employeesCache can be momentarily empty on first load (loadEmployees()
     // and loadPayrollRequests() run concurrently, not awaited in order) --
     // skip this half of the check rather than false-flag every row.
-    if (knownNames.size && !knownNames.has(r.employeeName)) {
+    // Added 11/2/2026 (per Guapo): an Employee Purchase logged against a
+    // driver name is legitimate (see populateEmployeeDropdown) -- it
+    // resolves on the backend against driver_info, not `employees`, so
+    // don't warn about it here as if the name were a typo/orphan.
+    const isDriverPurchase = r.type === "employeePurchases" && DEFAULT_DRIVERS.includes(r.employeeName);
+    if (knownNames.size && !knownNames.has(r.employeeName) && !isDriverPurchase) {
       lines.push(
         `${REQ_TYPE_DISPLAY[r.type]} — ${r.employeeName} isn't in the current employee list, so it ` +
         `will be excluded from every report until the name is fixed.`
@@ -2323,11 +2371,21 @@ function renderReport(data) {
   drvRows.innerHTML = "";
   (summary.drivers || []).forEach((d) => {
     const tr = document.createElement("tr");
-    const recapTotal = (Number(d.tips) || 0) + (Number(d.deliveries) || 0) + (Number(d.setups) || 0);
+    // Added 11/2/2026 (per Guapo): Employee Purchases comes out of
+    // Tips + Deliveries $ Total + Setups $ Total before Total -- matches
+    // the Driver Payroll (1099s) Recap sheet in the downloaded workbook
+    // exactly (see report_builder.build_report). Updated 11/2/2026 (per
+    // Guapo, "show a negative balance with an explanation of why"):
+    // Total is NOT floored at $0 -- a driver whose purchases exceeded
+    // what they earned shows the real negative number here too, same as
+    // their own Driver Payment Advice PDF.
+    const purchases = Number(d.eePurchases) || 0;
+    const grossTotal = (Number(d.tips) || 0) + (Number(d.deliveries) || 0) + (Number(d.setups) || 0);
+    const recapTotal = grossTotal - purchases;
     tr.innerHTML = `
       <td>${d.name}</td><td>${d.daysDriven}</td><td>${money(d.tipPayout)}</td>
       <td>${money(d.tips)}</td><td>${money(d.deliveries)}</td><td>${money(d.setups)}</td>
-      <td>${money(recapTotal)}</td>
+      <td>${money(d.eePurchases)}</td><td>${money(recapTotal)}</td>
     `;
     drvRows.appendChild(tr);
   });

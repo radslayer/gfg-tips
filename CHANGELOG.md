@@ -6,29 +6,34 @@ don't wait to be asked to update it. Sections are rewritten/condensed when
 stale, not just appended to. A fresh Claude session should be able to read
 this doc alone and pick up work without replaying prior conversations.
 
-Last updated: 2026-10-23
+Last updated: 2026-11-02
 
 ## Current state / in progress
 
-- **Kitchen Manager bonus formula — STILL unresolved, real money at
-  stake. New tooling below does NOT fix this; don't confuse "better
-  built" with "verified correct."** Rod flagged (10/9) that payroll and
-  Mike Gray's $1,000 Kitchen Manager bonus looked higher than expected.
-  A backtest against `bonus_data/weekly_metrics.csv` found 10 of 11
-  possible trailing-4-week windows hit the maximum bracket, which
-  doesn't reproduce the original "verified" checkpoints from the build
-  plan. Rod's working theory: an unintended column was being summed
-  into Sales. Partial progress since: on 10/20 Rod confirmed excluding
-  order Status "Payment Error" (not a revenue event) -- but that alone
-  is too small to explain the discrepancy. More significantly, a
-  rebuilt, properly date-bounded calculation (see below) for the
-  freshest real period (weeks of 10/4 and 10/11) came out to ratios of
-  103.38 and 109.30 -- well below the 120+ range that dominates the
-  disputed historical file. That's a data point, not a conclusion:
-  Rod has not yet finished reviewing his intended formula against what
-  was applied historically. **Do not trust weekly_metrics.csv's
-  existing 14 rows, or any bonus amount computed from them, until Rod
-  closes this out.**
+- **Kitchen Manager bonus formula — ROOT CAUSE FOUND AND FIXED
+  11/2/2026, not yet deployed.** Rod asked directly (11/2) why Mike
+  Gray's bonus/metric was so much higher than his own manual
+  calculation, and which revenue columns were being summed. Answer:
+  `SALES_COLUMNS` was `Subtotal + Gratuity + Discount + Setup +
+  Delivery` -- Gratuity (tip money, not kitchen revenue) was being
+  wrongly included, inflating Sales and therefore the Sales-per-
+  Kitchen-Hour ratio and the resulting bonus. This is exactly the
+  "unintended column" Rod's working theory (10/9) predicted. Confirmed
+  by Rod 11/2: "they should not be included. Subtotal, Discount, Setup
+  and Delivery. Those are the fields we should be capturing." Fixed in
+  `functions/report_builder.py` (`SALES_COLUMNS`, the Sales Calc
+  worksheet columns/docstrings), `bonus_data/compute_weekly_sales.py`
+  (the standalone script this is ported from -- kept in sync), and
+  `bonus_data/README.md`. Unit-verified: a synthetic 2-order test
+  confirms Gratuity/Surcharge are excluded and the math matches by
+  hand. **`weekly_metrics.csv` (and whatever's already in Firestore
+  `weeklyBonusMetrics`) was computed with the OLD, Gratuity-inflated
+  formula and has NOT been recomputed -- see the new "OPEN ITEM" at the
+  top of `bonus_data/README.md`. Do not recompute/overwrite that
+  history without Rod's explicit go-ahead, since it could revise
+  amounts already paid out.** Not yet committed/deployed -- this
+  period's payroll (pay date 11/6/2026) is confirmed unfinalized, so
+  Rod asked to rerun it with this fix once deployed.
 
 - **Orders-CSV → Sales automation: built, tested, and deployed
   10/20/2026.** Rod asked to be able to upload the raw orders export
@@ -108,6 +113,140 @@ Last updated: 2026-10-23
   reviews and finalizes himself.
 
 ## Decisions made and why
+
+- **Pay period default now anchors to today's actual date
+  (11/2/2026, per Guapo: "change this field so that it presents the
+  next payroll date from the date it is requested... nearly every
+  single time, if we're wanting to run the report on a Monday, it's
+  for the following Friday's payroll.")** The top "Pay date" dropdown's
+  auto-default (`pickDefaultPeriod` in `app.js`) used to scan
+  `PAY_PERIOD_DATES` from the fixed display floor forward for the
+  first one not yet marked `status: "submitted"` in Firestore
+  `tipsPeriods` -- with no regard for today's real date. If any one
+  period along the way was never explicitly marked submitted (skipped,
+  or the status write failed/was forgotten), the dropdown would get
+  stuck defaulting back to that stale old date indefinitely, no matter
+  how far today had actually moved on. Fixed to anchor on today first:
+  the earliest scheduled payroll date on or after today that hasn't
+  been submitted, falling back to the old whole-list scan only if
+  every upcoming date is somehow already submitted. Verified with a
+  standalone Node repro of both the normal case (today Mon 11/2/2026 ->
+  defaults to Fri 11/6/2026) and the stale-period bug case (an older
+  unsubmitted period no longer traps the default). Also updated the
+  helper text under the dropdown to match. Not yet committed/deployed.
+
+- **New: a 1099 driver's Employee Purchases now reduce their 1099 payout
+  (11/2/2026, per Guapo: "it is possible for a 1099 driver to make
+  employee purchases. We need to create a mechanism to reduce their 1099
+  payout by the amount of their employee purchase.")** Before this, the
+  Employee Purchase dropdown on the Payroll Report tab only ever listed
+  W2 `employees` -- a driver's name typed in some other way would have
+  fallen into `unresolved_names`, warned every period, and never
+  actually been deducted from anything; drivers had no path for this at
+  all. Design confirmed with Guapo (three questions, all answered):
+  (1) drivers are added to the SAME Employee Purchase dropdown (not a
+  separate entry point), but ONLY for that request type -- PTO/Misc
+  Amount/Misc Reimburse stay employees-only, since none of those apply
+  to a 1099 contractor; (2) if a purchase is bigger than what the driver
+  earned that period, this period's payout floors at $0 and a warning
+  flags the shortfall for Guapo to collect directly -- no automatic
+  carryover to the next period; (3) the purchase comes out of Tips +
+  Deliveries $ Total + Setups $ Total together (not deliveries/setups
+  only).
+  - `app.js`: `populateEmployeeDropdown()` now also lists `DEFAULT_DRIVERS`
+    (tagged "(driver)") whenever "Employee Purchase" is the selected
+    request type, re-populated on every `reqType` change.
+    `renderPendingAlerts()`'s "name isn't in the employee list" check no
+    longer false-flags a driver's purchase request. The report-results
+    preview table (`reportDriverRows`) and its header in `index.html`
+    gained an "Employee Purchases" column, with Total now floored at $0
+    after subtracting it (matches the workbook exactly).
+  - `report_builder.py`: `build_report`'s purchase resolution is now a
+    two-pass match -- first against `employees` (unchanged), then
+    whatever's still unmatched gets a second pass against `driver_info`'s
+    own keys (THIS period's real Tip Pool driver names, not a
+    separately-maintained list that could drift -- see the Rod-dual-row
+    bug fixed the same week for exactly what drift like that looks like).
+    The Driver Payroll (1099s) Recap table on the "Contractors Payments"
+    sheet gained an "Employee Purchases" column; "Total" is now
+    `=MAX(0,Tips+Deliveries+Setups-EmployeePurchases)`. A driver whose
+    purchases exceed their gross payout gets a dedicated warning naming
+    the exact shortfall dollar amount. `summary["drivers"]` gained
+    `eePurchases` for the live on-screen preview.
+  - Verified with a real `build_report` call (synthetic CSV + driver_info
+    + four pending-purchase records: one W2 employee, one driver within
+    their gross payout, one driver EXCEEDING their gross payout, and one
+    truly-unknown name) -- confirmed via `recalc.py` (0 formula errors,
+    70 formulas) and a `data_only=True` read-back: the W2 purchase was
+    unaffected, the in-budget driver purchase correctly reduced their
+    Total (120 - 30 = 90), the over-budget driver purchase correctly
+    floored their Total at $0 and produced the expected shortfall
+    warning ($500 purchase - $10 gross = $490 shortfall), and the
+    truly-unknown name still correctly fell through to the existing
+    unresolved-name warning untouched.
+  - **Caught in review (11/2/2026, per Guapo asking "did you also modify
+    the output for the driver so that they can see the deduction"):**
+    the actual per-driver "Driver Payment Advice" PDF
+    (`functions/driver_advice_pdf.py`, auto-generated on finalize and
+    pushed straight to the OneDrive folder drivers pull from -- see
+    `get_driver_advice_pdfs`/`DRIVERS_FOLDER` in main.py) had NOT been
+    touched -- it only ever took tips/deliveries/setups, so a driver's
+    own copy would have shown their full gross amount with no sign of
+    the deduction at all, contradicting what they're actually paid.
+    Fixed: `build_driver_advice_pdf` takes a new `ee_purchases` param,
+    shows an "Employee Purchases" line (only when nonzero, so a driver
+    with no purchase sees the exact same 3-line layout as always) and
+    floors Total at $0 the same way the sheet does. The "skip -- nothing
+    to report" check in main.py now also counts a purchase on file as
+    "something to report," so a driver with a deduction but otherwise
+    quiet period still gets an advice instead of none at all. Verified
+    by generating and reading back three real PDFs via pdftotext: no
+    purchase (unchanged), a $30 purchase against $140 gross (Total
+    $110.00), and a $500 purchase against $10 gross (Total floored at
+    $0.00) -- all correct.
+  - **Resolved (11/2/2026, per Guapo): "you can generate the report and
+    show a negative balance with an explanation of why. You should
+    itemize the employee purchases if there are more than one on this
+    report, rather than aggregating them."** Two changes:
+    1. Total is no longer floored at $0 anywhere it's shown -- the
+       Contractors Payments sheet's formula, the Driver Payment Advice
+       PDF, and the live on-screen report preview (`app.js` -- also fixed
+       `money()`'s negative formatting, which rendered the ugly
+       "$-490.00" instead of "-$490.00") all now show the real negative
+       number when purchases exceed earnings. The shortfall warning text
+       was updated to match ("their payout this period shows as
+       -$490.00" instead of "their 1099 payout is $0"). No automatic
+       carryover to the next period either way -- that part of the
+       original decision still stands.
+    2. The Driver Payment Advice PDF itemizes -- `report_builder.py` now
+       keeps each individual purchase record (not just the summed total)
+       per driver as `eePurchaseItems` in the summary, threaded through
+       `main.py` to `driver_advice_pdf.build_driver_advice_pdf`, which
+       shows one line per purchase (product + date) when a driver has
+       MORE than one that period, or the original single combined line
+       when there's zero or one (unchanged from before). When Total goes
+       negative, a plain-language note appears right under the recap
+       table -- "Employee Purchases this period exceeded total earnings
+       by $X.XX." -- deliberately without saying how/when it'll be
+       collected, since that's a conversation between Guapo and the
+       driver, not something to presume in an auto-distributed PDF. The
+       Contractors Payments sheet itself still shows one aggregated
+       Employee Purchases column per driver (a summary table across all
+       drivers, not a per-driver statement) -- only the PDF itemizes,
+       since that's the document this was actually asked about.
+    - Verified for real: regenerated the same two synthetic PDFs with
+      `recalc.py` confirming 0 formula errors on the sheet (Ross Pullen's
+      row correctly reads 10 - 500 = -490, Totals row -400) and
+      `pdftotext` confirming Richard Haselton's PDF lists "Employee
+      Purchase - Gatorade (11/5/2026) -$10.00" and "...- Phone Mount
+      (11/9/2026) -$20.00" as separate lines (Total $90.00), while Ross
+      Pullen's single purchase still renders as one "Employee Purchases
+      -$500.00" line, Total -$490.00, with the exceeded-earnings note
+      printed directly beneath it.
+  - **Not yet committed, pushed, or deployed** -- this is a real
+    behavior/money change (deducts from a contractor's payout), so it's
+    held for Guapo's review before going live, unlike the smaller fixes
+    earlier this week.
 
 - **Rod's 2% S-Corp Medical figure updated to $781.29/period (10/23/2026, per Guapo -- new amount advised going forward; he's entering it in ADP himself).** Updated the matching hardcoded constant in `report_builder.py` from the old $677.12 to $781.29 (`ROD_MEDICAL_AMOUNT`, line ~193) purely for consistency -- this column isn't actually read from this report for Rod's pay (see the entry above: his Medical/Salary figures live directly on his ADP profile), so this was a documentation-cleanliness update, not a pay-accuracy fix. `ROD_MEDICAL_THIRD_PERIOD` (the $0 exception on the 3rd biweekly pay date of a month) was left unchanged -- not mentioned as changing.
 

@@ -307,7 +307,7 @@ def compute_weekly_kitchen_hours(records, employees):
 # ---------------------------------------------------------------------------
 SALES_INCLUDED_STATUSES = {"Closed", "Unpaid"}
 SALES_DOCUMENTED_EXCLUDED_STATUSES = {"Tentative", "Refund Needed", "Payment Error"}
-SALES_COLUMNS = ["Subtotal", "Gratuity", "Discount", "Setup", "Delivery"]
+SALES_COLUMNS = ["Subtotal", "Discount", "Setup", "Delivery"]
 ORDERS_CSV_DATE_COL = "Event Timestamp (Date)"
 ORDERS_CSV_STATUS_COL = "Status"
 
@@ -317,8 +317,10 @@ def compute_sales_from_orders_csv(csv_text, week1_start, week2_start):
     a raw orders export CSV, bounding each week strictly by the order's
     own Event Timestamp (Date) -- not by which export file it happened to
     be in (confirmed 10/20/2026 this was NOT previously enforced in code).
-    Sales = Subtotal + Gratuity + Discount + Setup + Delivery (Surcharge
-    excluded -- credit-card-fee reimbursement, not kitchen-related).
+    Sales = Subtotal + Discount + Setup + Delivery (Gratuity and Surcharge
+    excluded -- corrected 11/2/2026 per Guapo: Gratuity is tip money, not
+    kitchen revenue, and Surcharge is credit-card-fee reimbursement, not
+    kitchen-related).
     Only Status "Closed"/"Unpaid" orders are included; "Tentative",
     "Refund Needed", and "Payment Error" are documented exclusions
     (Payment Error confirmed by Guapo 10/20/2026, "obviously not a
@@ -1026,6 +1028,48 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
 
     pto_hours, pto_ids, u1 = sum_by_employee(pending_pto, "hours", employees)
     ee_purchases, purch_ids, u2 = sum_by_employee(pending_purchases, "amount", employees)
+    # Added 11/2/2026 (per Guapo): a 1099 driver can rack up an Employee
+    # Purchase too, same as a W2 employee -- but drivers were never in
+    # `employees` (no W2 wages, no ADP row), so before this fix any
+    # purchase logged against a driver's name just fell into `u2` as
+    # "unresolved" every single period, generated a warning, and was
+    # never actually deducted from anything -- it just sat there forever.
+    # Second pass: whatever didn't match a W2 employee name, try matching
+    # it against THIS period's own driver names -- `driver_info`'s keys,
+    # i.e. whoever Larry actually entered on the Tip Pool tab this period,
+    # not a separately-maintained name list that could drift out of sync
+    # with it (see the Rod-dual-row bug fixed earlier the same week for
+    # exactly what that drift looks like). Only purchases get this second
+    # pass -- PTO/Misc Amount/Misc Reimburse genuinely don't apply to a
+    # 1099 contractor (no W2 wages to take PTO against), so a driver name
+    # logged against one of those still correctly falls through to the
+    # unresolved-name warning below. The deduction itself happens down in
+    # the Driver Payroll (1099s) Recap table, where driver_purchases is
+    # subtracted from Tips + Deliveries $ Total + Setups $ Total.
+    driver_purchase_candidates = [
+        r for r in pending_purchases if (r.get("employeeName") or "").strip() in u2
+    ]
+    driver_purchases, driver_purch_ids, u2 = sum_by_employee(
+        driver_purchase_candidates, "amount", driver_info)
+    purch_ids = purch_ids + driver_purch_ids
+    # Added 11/2/2026 (per Guapo): the Driver Payment Advice PDF itemizes
+    # each individual purchase (product, date, amount) rather than just
+    # showing one aggregated dollar figure, whenever a driver has more
+    # than one this period -- so keep the actual records, not just their
+    # sum, for whichever ones were consumed above.
+    driver_purchase_items = defaultdict(list)
+    _driver_purch_ids_set = set(driver_purch_ids)
+    for r in driver_purchase_candidates:
+        if r.get("id") not in _driver_purch_ids_set:
+            continue
+        name = (r.get("employeeName") or "").strip()
+        driver_purchase_items[name].append({
+            "product": r.get("productPurchased") or "Employee Purchase",
+            "costPerUnit": r.get("costPerUnit"),
+            "units": r.get("unitsPurchased"),
+            "amount": r.get("amount"),
+            "date": r.get("date"),
+        })
     misc_amt, misc_amt_ids, u3 = sum_by_employee(pending_misc_amt, "amount", employees)
     misc_reimb, misc_reimb_ids, u4 = sum_by_employee(pending_misc_reimb, "amount", employees)
     if thao_makeup:
@@ -1619,14 +1663,14 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         ws_sc = wb.create_sheet("Sales Calc")
         r_sc = title_block(ws_sc, "Sales -- computed from uploaded orders export", [
             f"Source: {orders_csv_name} (raw orders export, uploaded for this report).",
-            "Sales = Subtotal + Gratuity + Discount + Setup + Delivery (Surcharge excluded).",
+            "Sales = Subtotal + Discount + Setup + Delivery (Gratuity and Surcharge excluded).",
             "Only orders with Status \"Closed\" or \"Unpaid\" are included. \"Tentative\", "
             "\"Refund Needed\", and \"Payment Error\" are excluded. Any other status is "
             "flagged in the warnings banner above, not silently included.",
             "Each week is bounded by the order's own Event Timestamp (Date), regardless of "
             "what date range the uploaded file itself covered.",
         ])
-        headers = ["Week", "Date Range Enforced", "Orders Included", "Subtotal", "Gratuity",
+        headers = ["Week", "Date Range Enforced", "Orders Included", "Subtotal",
                    "Discount", "Setup", "Delivery", "Total Sales", "Excluded (documented)"]
         for i, h in enumerate(headers, start=1):
             ws_sc.cell(row=r_sc, column=i, value=h)
@@ -1640,7 +1684,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 label,
                 f'{a["week_start"]:%m/%d/%Y} - {a["week_end"]:%m/%d/%Y}',
                 a["included_count"],
-                a["totals"]["Subtotal"], a["totals"]["Gratuity"], a["totals"]["Discount"],
+                a["totals"]["Subtotal"], a["totals"]["Discount"],
                 a["totals"]["Setup"], a["totals"]["Delivery"], a["sales"],
                 a["excluded_known_count"],
             ]
@@ -1648,7 +1692,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 cell = ws_sc.cell(row=r_sc, column=i, value=v)
                 cell.font = INPUT_FONT
                 cell.border = THIN
-                if i in (4, 5, 6, 7, 8, 9):
+                if i in (4, 5, 6, 7, 8):
                     cell.number_format = "$#,##0.00"
             r_sc += 1
         r_sc += 1
@@ -1758,6 +1802,36 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         row += 2
 
         if driver_info:
+            # Added 11/2/2026 (per Guapo): drivers can have Employee
+            # Purchases deducted from their 1099 payout too -- see the
+            # driver_purchases two-pass resolution above. Deducted from
+            # Tips + Deliveries $ Total + Setups $ Total together (per
+            # Guapo: if Deliveries $ + Setups $ alone don't cover it, the
+            # remainder comes out of Tips too). Updated 11/2/2026 (per
+            # Guapo, "you can generate the report and show a negative
+            # balance with an explanation of why"): Total is allowed to go
+            # negative -- NOT floored at $0 -- so the sheet always shows
+            # the real number rather than hiding a shortfall behind a
+            # misleadingly-blank $0. Still no automatic carryover to the
+            # next period (that part of the original decision stands) --
+            # a warning below calls out the shortfall for Rod to collect
+            # directly.
+            for dname, purchase_amt in driver_purchases.items():
+                gross = (
+                    (driver_tips.get(dname, 0) or 0)
+                    + (driver_info.get(dname, {}).get("deliveries", 0) or 0)
+                    + (driver_info.get(dname, {}).get("setups", 0) or 0)
+                )
+                if purchase_amt > gross:
+                    shortfall = round(purchase_amt - gross, 2)
+                    warnings.append(
+                        f"{dname}'s Employee Purchases this period "
+                        f"(${purchase_amt:.2f}) exceed what they earned "
+                        f"(${gross:.2f}) -- their payout this period shows "
+                        f"as -${shortfall:.2f}, which is NOT carried "
+                        f"forward automatically. Collect it from {dname} "
+                        f"directly."
+                    )
             ws7.cell(row=row, column=1, value="Driver Payroll (1099s) Recap").font = sub_font
             row += 1
             for line in [
@@ -1766,15 +1840,19 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 "(entered on the Tip Pool tab, same as the old Driver Payroll workbook).",
                 "Tips is NOT entered by Larry -- it's pulled from " + TIPS_SHEET + " (the same tip-pool payout",
                 "shown on the Driver Tip Payouts sheet), since that figure only exists once the tip-pool math runs.",
-                "Total = Tips + Deliveries $ Total + Setups $ Total (computed here, not separately entered).",
+                "Employee Purchases (added 11/2/2026) comes from the same Employee Purchase requests W2 staff",
+                "use, logged against the driver's name instead -- see the Payroll Requests tab.",
+                "Total = Tips + Deliveries $ Total + Setups $ Total - Employee Purchases -- can go negative",
+                "if purchases exceeded what a driver earned (see the warnings banner); not carried forward.",
             ]:
                 ws7.cell(row=row, column=1, value=line).font = NOTE_FONT
                 row += 1
             row += 1
             header_row = row
-            for i, h in enumerate(["Driver", "Tips", "Deliveries $ Total", "Setups $ Total", "Total"], start=1):
+            headers = ["Driver", "Tips", "Deliveries $ Total", "Setups $ Total", "Employee Purchases", "Total"]
+            for i, h in enumerate(headers, start=1):
                 ws7.cell(row=header_row, column=i, value=h)
-            style_header(ws7, header_row, 5)
+            style_header(ws7, header_row, len(headers))
             row = header_row + 1
             recap_first_row = row
             for dname, info in driver_info.items():
@@ -1787,22 +1865,25 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                     c = ws7.cell(row=row, column=cc, value=info.get(field, 0) or 0)
                     c.font = INPUT_FONT
                     c.number_format = "$#,##0.00"
-                total_f = f"=B{row}+C{row}+D{row}"
-                c = ws7.cell(row=row, column=5, value=total_f)
+                c = ws7.cell(row=row, column=5, value=driver_purchases.get(dname, 0) or 0)
+                c.font = INPUT_FONT
+                c.number_format = "$#,##0.00"
+                total_f = f"=B{row}+C{row}+D{row}-E{row}"
+                c = ws7.cell(row=row, column=6, value=total_f)
                 c.font = FORMULA_FONT
                 c.number_format = "$#,##0.00"
-                for cc in range(1, 6):
+                for cc in range(1, len(headers) + 1):
                     ws7.cell(row=row, column=cc).border = THIN
                 row += 1
             recap_last_row = row - 1
             ws7.cell(row=row, column=1, value="Totals").font = BOLD_FONT
-            for cc in (2, 3, 4, 5):
+            for cc in (2, 3, 4, 5, 6):
                 col_letter = get_column_letter(cc)
                 c = ws7.cell(row=row, column=cc,
                              value=f"=SUM({col_letter}{recap_first_row}:{col_letter}{recap_last_row})")
                 c.font = BOLD_FONT
                 c.number_format = "$#,##0.00"
-            for cc in range(1, 6):
+            for cc in range(1, len(headers) + 1):
                 ws7.cell(row=row, column=cc).border = THIN
                 ws7.cell(row=row, column=cc).fill = TOTALS_FILL
             row += 3
@@ -1981,6 +2062,15 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 "tips": driver_tips.get(dname, 0),
                 "deliveries": driver_info.get(dname, {}).get("deliveries", 0),
                 "setups": driver_info.get(dname, {}).get("setups", 0),
+                # Added 11/2/2026 (per Guapo) -- see driver_purchases above;
+                # None (not 0) when this driver has no purchase this period,
+                # matching ee_purchases' same None-means-nothing convention
+                # for W2 employees.
+                "eePurchases": driver_purchases.get(dname),
+                # The individual purchase records (product/date/amount),
+                # for the Driver Payment Advice PDF to itemize when there's
+                # more than one -- see driver_purchase_items above.
+                "eePurchaseItems": driver_purchase_items.get(dname, []),
             }
             for dname, ddays in driver_days_for_tips.items()
         ],

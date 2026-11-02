@@ -719,13 +719,22 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             deliveries = d.get("deliveries", 0) or 0
             setups = d.get("setups", 0) or 0
             days = d.get("daysDriven", 0) or 0
+            # Added 11/2/2026 (per Guapo): a driver's Employee Purchases
+            # deduction -- see report_builder.build_report's driver_purchases.
+            ee_purchases = d.get("eePurchases", 0) or 0
+            ee_purchase_items = d.get("eePurchaseItems") or []
             # "Active" this period -- Guapo's working definition (not yet
             # confirmed, flagged in project notes): skip anyone with
-            # nothing to report rather than sending a $0 advice.
-            if not (tips or deliveries or setups or days):
+            # nothing to report rather than sending a $0 advice. A
+            # purchase on file counts as "something to report" too, even
+            # if days/tips/deliveries/setups are all 0 -- otherwise a
+            # driver with a purchase but no other activity this period
+            # would never get an advice at all, hiding the deduction.
+            if not (tips or deliveries or setups or days or ee_purchases):
                 continue
             pdf_bytes = driver_advice_pdf.build_driver_advice_pdf(
-                dname, pay_period_id, tips=tips, deliveries=deliveries, setups=setups)
+                dname, pay_period_id, tips=tips, deliveries=deliveries, setups=setups,
+                ee_purchases=ee_purchases, ee_purchase_items=ee_purchase_items)
             filename = driver_advice_pdf.safe_filename(dname, pay_period_id)
             blob = bucket.blob(f"driver_advice/{pay_period_id}/{filename}")
             # Store the real driver name as blob metadata -- safe_filename()
