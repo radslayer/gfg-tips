@@ -26,14 +26,14 @@ Last updated: 2026-11-02
   (the standalone script this is ported from -- kept in sync), and
   `bonus_data/README.md`. Unit-verified: a synthetic 2-order test
   confirms Gratuity/Surcharge are excluded and the math matches by
-  hand. **`weekly_metrics.csv` (and whatever's already in Firestore
-  `weeklyBonusMetrics`) was computed with the OLD, Gratuity-inflated
-  formula and has NOT been recomputed -- see the new "OPEN ITEM" at the
-  top of `bonus_data/README.md`. Do not recompute/overwrite that
-  history without Rod's explicit go-ahead, since it could revise
-  amounts already paid out.** Not yet committed/deployed -- this
-  period's payroll (pay date 11/6/2026) is confirmed unfinalized, so
-  Rod asked to rerun it with this fix once deployed.
+  hand. **Applies going forward only -- `weekly_metrics.csv` and
+  Firestore `weeklyBonusMetrics` were computed with the OLD,
+  Gratuity-inflated formula and are deliberately NOT being recomputed.
+  Per Rod 11/2: "do not make changes to the past. what's paid is paid."
+  See `bonus_data/README.md`.** Committed 11/2 (`3e199b3`), not yet
+  pushed/deployed -- this period's payroll (pay date 11/6/2026) is
+  confirmed unfinalized, so Rod asked to rerun it with this fix once
+  deployed.
 
 - **Orders-CSV → Sales automation: built, tested, and deployed
   10/20/2026.** Rod asked to be able to upload the raw orders export
