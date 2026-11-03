@@ -41,6 +41,15 @@ TARGET_USER = "rod@gourmetforgood.com"
 EES_FOLDER = "# Shared w Marella and Sara/Payroll - EEs as of 2610"
 # Shared with front office too. Individual driver advice PDFs go here.
 DRIVERS_FOLDER = "# Shared w Marella and Sara/Payroll - Drivers as of 2610"
+# Private: CPAs + Rod only, same as EES_FOLDER -- added 11/3/2026 (per
+# Guapo) for the new Kitchen Manager/Supervisor bonus advice PDFs
+# (manager_bonus_pdf.py). Individual bonus $ amounts are treated as
+# compensation info, same sensitivity as EES_FOLDER's full payroll
+# workbook, NOT shared further like DRIVERS_FOLDER is -- created
+# 11/3/2026 as a plain subfolder of "# Shared w Marella and Sara" so it
+# inherits that folder's existing Rod+CPA sharing (no sharing was set
+# explicitly; double-check it actually inherited before relying on it).
+MANAGER_BONUS_FOLDER = "# Shared w Marella and Sara/Payroll - Manager Bonuses as of 2610"
 
 _TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 

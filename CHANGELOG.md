@@ -10,6 +10,41 @@ Last updated: 2026-11-03
 
 ## Current state / in progress
 
+- **New: Kitchen Manager/Supervisor bonus recap PDFs, built 11/3/2026
+  (per Guapo: "I also need a bonus recap for managers similar to what
+  you produce for the drivers").** Previously the only record of a
+  Kitchen Manager/Supervisor bonus was the "Bonus Calc" worksheet buried
+  inside the full Payroll Calculation Report workbook -- nothing
+  standalone to actually hand to Mike Gray or Alejandro Gomez, unlike
+  drivers who already get a branded PDF each period. New
+  `functions/manager_bonus_pdf.py` (same branding/layout pattern as
+  `driver_advice_pdf.py`) builds one PDF per bonus recipient showing the
+  full breakdown: every week in the averaging window (date + Sales/
+  Kitchen-Hour ratio), the average, the bracket multiplier, the $500
+  basis, and the resulting bonus amount. Generated automatically at
+  finalize time, same as driver PDFs -- but only for a bonuses_paid
+  entry with a real employee tagged for the role (a triggered period
+  with no one tagged has nowhere to send a recap; that's already its
+  own warning). A triggered period with a $0 result (ratio below the
+  lowest bracket) still gets a recap, since that's genuine information,
+  not "nothing happened." Persisted to Cloud Storage
+  (`manager_bonus_advice/<period>/...`, re-fetchable via the new
+  `get_manager_bonus_pdfs` callable) and pushed to a brand-new OneDrive
+  folder, "Payroll - Manager Bonuses as of 2610" -- created 11/3/2026 as
+  a sibling of the existing EEs/Drivers folders under "# Shared w
+  Marella and Sara" so it inherits that parent's existing Rod+CPA-only
+  sharing (bonus $ amounts treated as compensation info, not shared with
+  front office the way driver advice is) -- **double-check the sharing
+  actually inherited correctly before relying on it**, since it was
+  created via the Microsoft 365 connector without setting permissions
+  explicitly. Frontend: new "Manager Bonus Advice" tab (same re-fetch-
+  by-pay-period pattern as the Driver Advice tab) plus an inline PDF
+  list right after generating/finalizing a report on the Payroll Report
+  tab. Unit-verified: both PDFs render correctly (visually inspected a
+  Kitchen Manager $250 case and a Supervisor $0/quarter-window case) and
+  all element IDs match between app.js and index.html. **Not yet
+  deployed or tested live.**
+
 - **Randy Pruitt's Employee Purchase was silently vanishing, not
   deducted anywhere -- found 11/3/2026, fixed twice (the first fix was
   itself based on a wrong assumption, corrected same day).** Confirmed

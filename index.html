@@ -822,6 +822,18 @@
           </div>
           <div id="reportDriverAdvicePdfs" class="req-list hidden"></div>
         </div>
+
+        <div id="reportManagerBonusWrap" class="hidden" style="margin-top:18px;">
+          <h2 style="font-size:14px;">Manager bonus advice PDFs (just generated)</h2>
+          <div class="small" style="margin-bottom:10px;">
+            One PDF per Kitchen Manager/Supervisor bonus actually paid this period -- same
+            full breakdown (weekly ratios, average, bracket, amount) as the workbook's "Bonus
+            Calc" sheet, formatted as a handout for that person. Only appears on a period
+            where a bonus actually triggered. Also available later from the Manager Bonus
+            Advice tab.
+          </div>
+          <div id="reportManagerBonusPdfs" class="req-list hidden"></div>
+        </div>
       </div>
 
       <div style="margin-top:26px; padding-top:18px; border-top:1px solid var(--border);">
@@ -857,6 +869,25 @@
       <button id="loadDriverAdviceBtn">Load PDFs</button>
       <div id="driverAdviceMsg" class="msg small"></div>
       <div id="driverAdviceList" class="req-list hidden" style="margin-top:14px;"></div>
+    </div>
+
+    <div class="card hidden" id="managerBonusCard">
+      <h2>Manager Bonus Advice</h2>
+      <div class="small" style="margin-bottom:14px;">
+        Re-downloads the Kitchen Manager/Supervisor bonus recap PDFs already generated for a
+        finalized pay period, so you can print or re-present them without re-running the whole
+        Payroll Report. PDFs are generated automatically the moment a period is finalized on the
+        Payroll Report tab, but only on a period where a bonus actually triggered (Kitchen
+        Manager: tip-payout weeks; Supervisor: the last payroll of the month following a
+        quarter-end) -- most periods will come back empty, which is expected.
+      </div>
+      <div class="field" style="max-width:280px;">
+        <label for="managerBonusPeriodSelect">Pay period</label>
+        <select id="managerBonusPeriodSelect"></select>
+      </div>
+      <button id="loadManagerBonusBtn">Load PDFs</button>
+      <div id="managerBonusMsg" class="msg small"></div>
+      <div id="managerBonusList" class="req-list hidden" style="margin-top:14px;"></div>
     </div>
 
   </div>

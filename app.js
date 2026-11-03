@@ -245,6 +245,7 @@ const SECTIONS = [
   { id: "adminCard", label: "Admin", roles: ["admin"] },
   { id: "reportCard", label: "Payroll Report", roles: ["admin"] },
   { id: "driverAdviceCard", label: "Driver Advice", roles: ["admin", "manager"] },
+  { id: "managerBonusCard", label: "Manager Bonus Advice", roles: ["admin", "manager"] },
 ];
 let activeSectionId = null;
 
@@ -1793,6 +1794,7 @@ async function loadPayrollRequests() {
   // only ever needs to offer dates that were actually finalized -- same
   // list, same reasoning, as the un-finalize picker just above.
   populateDriverAdvicePeriodOptions(finalizedDatesNewestFirst);
+  populateManagerBonusPeriodOptions(finalizedDatesNewestFirst);
 
   // Added 9/8/2026 (per Guapo): keep the "Payroll date" picker on the
   // request form in sync with which dates have actually been finalized --
@@ -1870,6 +1872,39 @@ function renderPendingAlerts(pendingRows, finalizedDates) {
 // ever exist for a pay period that was actually finalized.
 function populateDriverAdvicePeriodOptions(datesNewestFirst) {
   const sel = $("driverAdvicePeriodSelect");
+  if (!sel) return;
+  const previousValue = sel.value;
+  sel.innerHTML = "";
+  if (!datesNewestFirst.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No finalized pay dates yet";
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  datesNewestFirst.forEach((dateStr, i) => {
+    const opt = document.createElement("option");
+    opt.value = dateStr;
+    opt.textContent = formatPayDateLabel(dateStr) + (i === 0 ? "  (most recent)" : "");
+    sel.appendChild(opt);
+  });
+  if (datesNewestFirst.includes(previousValue)) {
+    sel.value = previousValue;
+  }
+}
+
+// Added 11/3/2026 (per Guapo: "a bonus recap for managers similar to
+// what you produce for the drivers") -- same list/shape as
+// populateDriverAdvicePeriodOptions, for the Manager Bonus Advice tab's
+// pay-period picker. Most periods will have nothing (neither bonus
+// triggers most weeks) -- that's expected, see loadManagerBonusBtn's
+// empty-state message below, not this picker's job to filter those out
+// (it can't know without a server round trip which finalized periods
+// actually had a bonus fire).
+function populateManagerBonusPeriodOptions(datesNewestFirst) {
+  const sel = $("managerBonusPeriodSelect");
   if (!sel) return;
   const previousValue = sel.value;
   sel.innerHTML = "";
@@ -2410,6 +2445,19 @@ function renderReport(data) {
     hide(driverAdviceWrap);
   }
 
+  // Added 11/3/2026 -- same inline-download pattern as the driver advice
+  // PDFs above, just above the short bonus confirmation line below (that
+  // line is the quick summary; these are the actual recap PDFs to hand
+  // to Mike/Alejandro). renderDriverAdvicePdfList is generic (name/
+  // filename/pdfBase64 only) so it's reused as-is here.
+  const managerBonusWrap = $("reportManagerBonusWrap");
+  if (data.managerBonusPdfs && data.managerBonusPdfs.length) {
+    renderDriverAdvicePdfList("reportManagerBonusPdfs", data.managerBonusPdfs);
+    show(managerBonusWrap);
+  } else if (managerBonusWrap) {
+    hide(managerBonusWrap);
+  }
+
   // Added 10/6/2026 (per Guapo) -- a short confirmation line when the
   // Kitchen Manager and/or Supervisor bonus actually fired this period.
   // Full audit detail (the window of weekly ratios, the average, the
@@ -2568,3 +2616,43 @@ $("loadDriverAdviceBtn").addEventListener("click", async () => {
     $("loadDriverAdviceBtn").disabled = false;
   }
 });
+
+// Added 11/3/2026 (per Guapo) -- same re-fetch pattern as the driver
+// advice tab above, for the Kitchen Manager/Supervisor bonus recap
+// PDFs. Most finalized periods will legitimately come back empty (the
+// bonus only triggers on tip-payout weeks and the quarter-end-following
+// period) -- that's expected, not an error, so the empty-state message
+// below says so rather than implying something's missing.
+if ($("loadManagerBonusBtn")) {
+  $("loadManagerBonusBtn").addEventListener("click", async () => {
+    const payPeriodId = $("managerBonusPeriodSelect").value;
+    if (!payPeriodId) {
+      setMsg($("managerBonusMsg"), "Pick a finalized pay period first.", "error");
+      return;
+    }
+    $("loadManagerBonusBtn").disabled = true;
+    setMsg($("managerBonusMsg"), "Loading...", "");
+    hide($("managerBonusList"));
+    try {
+      const call = httpsCallable(functions, "get_manager_bonus_pdfs");
+      const res = await call({ payPeriodId });
+      const pdfs = res.data.pdfs || [];
+      renderDriverAdvicePdfList("managerBonusList", pdfs);
+      if (!pdfs.length) {
+        setMsg(
+          $("managerBonusMsg"),
+          "No manager bonus PDFs for that pay period -- either neither bonus triggered that " +
+            "period (most periods), no one was tagged for the role, or it was finalized " +
+            "before this feature existed (11/3/2026).",
+          ""
+        );
+      } else {
+        setMsg($("managerBonusMsg"), "", "");
+      }
+    } catch (err) {
+      setMsg($("managerBonusMsg"), "Couldn't load: " + err.message, "error");
+    } finally {
+      $("loadManagerBonusBtn").disabled = false;
+    }
+  });
+}

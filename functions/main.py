@@ -29,6 +29,7 @@ from firebase_functions import https_fn, options, scheduler_fn
 
 import report_builder
 import driver_advice_pdf
+import manager_bonus_pdf
 import graph_onedrive
 
 firebase_admin.initialize_app()
@@ -675,6 +676,7 @@ def generate_payroll_report(req: https_fn.CallableRequest):
     # yet -- that half of the original design needs an Azure AD app
     # registration (Microsoft Graph Mail.Send) that hasn't been set up.
     driver_advice_pdfs = []
+    manager_bonus_pdfs = []
     if finalize:
         from firebase_admin import storage as fb_storage
         bucket = fb_storage.bucket()
@@ -756,6 +758,48 @@ def generate_payroll_report(req: https_fn.CallableRequest):
                 except Exception as e:
                     warnings.append(f"OneDrive: couldn't upload {filename} ({e}).")
 
+        # Added 11/3/2026 (per Guapo: "I also need a bonus recap for
+        # managers similar to what you produce for the drivers") -- one
+        # branded PDF per Kitchen Manager/Supervisor bonus actually paid
+        # this period, same generate-at-finalize/persist-to-Storage/push-
+        # to-OneDrive pattern as the driver advice PDFs just above. Only
+        # for bonuses_paid entries that trigger this period AND have a
+        # real employee tagged for the role (per Guapo: "only when a
+        # bonus triggers") -- a period where neither bonus applies has no
+        # bonuses_paid entries at all, and a triggered period with no one
+        # tagged for the role has nowhere to send a recap (that's already
+        # its own warning above). A triggered bonus that comes out to
+        # $0 (ratio below the lowest bracket) still gets a recap -- that
+        # $0 IS the real answer for that period, not "nothing happened."
+        for bp in summary.get("bonusesPaid", []):
+            bp_name = bp.get("employee")
+            if not bp_name:
+                continue
+            pdf_bytes = manager_bonus_pdf.build_manager_bonus_pdf(
+                bp_name, bp["role"], pay_period_id, bp.get("weeklyDetail"),
+                avg_ratio=bp.get("avgRatio"), window_weeks=bp.get("windowWeeks"),
+                multiplier=bp.get("multiplier"), bonus_basis=report_builder.BONUS_BASIS,
+                amount=bp.get("amount"), quarter=bp.get("quarter"))
+            filename = manager_bonus_pdf.safe_filename(bp_name, bp["role"], pay_period_id)
+            blob = bucket.blob(f"manager_bonus_advice/{pay_period_id}/{filename}")
+            blob.metadata = {"employeeName": bp_name, "role": bp["role"]}
+            blob.upload_from_string(pdf_bytes, content_type="application/pdf")
+            manager_bonus_pdfs.append({
+                "name": bp_name,
+                "role": bp["role"],
+                "amount": bp.get("amount"),
+                "filename": filename,
+                "pdfBase64": base64.b64encode(pdf_bytes).decode("ascii"),
+            })
+
+            if graph_token:
+                try:
+                    graph_onedrive.upload_file(
+                        graph_token, graph_onedrive.MANAGER_BONUS_FOLDER, filename,
+                        pdf_bytes, "application/pdf")
+                except Exception as e:
+                    warnings.append(f"OneDrive: couldn't upload {filename} ({e}).")
+
     return {
         "summary": summary,
         "warnings": warnings,
@@ -764,6 +808,7 @@ def generate_payroll_report(req: https_fn.CallableRequest):
         "finalized": finalize,
         "finalizedCount": finalized_count,
         "driverAdvicePdfs": driver_advice_pdfs,
+        "managerBonusPdfs": manager_bonus_pdfs,
     }
 
 
@@ -794,6 +839,41 @@ def get_driver_advice_pdfs(req: https_fn.CallableRequest):
         blob.reload()  # metadata isn't populated by list_blobs alone
         pdfs.append({
             "name": (blob.metadata or {}).get("driverName") or blob.name.rsplit("/", 1)[-1],
+            "filename": blob.name.rsplit("/", 1)[-1],
+            "pdfBase64": base64.b64encode(blob.download_as_bytes()).decode("ascii"),
+        })
+    return {"payPeriodId": pay_period_id, "pdfs": pdfs}
+
+
+@https_fn.on_call(region="us-central1", memory=options.MemoryOption.MB_256, timeout_sec=60)
+def get_manager_bonus_pdfs(req: https_fn.CallableRequest):
+    """Owner or Manager. Re-fetches the Kitchen Manager/Supervisor bonus
+    advice PDFs already generated for a pay period that was finalized,
+    from Cloud Storage -- same pattern as get_driver_advice_pdfs. Returns
+    an empty list (not an error) for a period that was never finalized,
+    was finalized before this feature existed (11/3/2026), or simply had
+    no bonus trigger that period."""
+    db = firestore.client()
+    _require_role(req, db, {"admin", "manager"})
+
+    data = req.data or {}
+    pay_period_id = data.get("payPeriodId")
+    if not pay_period_id:
+        raise https_fn.HttpsError(
+            https_fn.FunctionsErrorCode.INVALID_ARGUMENT, "Pick a pay period first.")
+
+    from firebase_admin import storage as fb_storage
+    bucket = fb_storage.bucket()
+    prefix = f"manager_bonus_advice/{pay_period_id}/"
+    pdfs = []
+    for blob in bucket.list_blobs(prefix=prefix):
+        if not blob.name.endswith(".pdf"):
+            continue
+        blob.reload()
+        meta = blob.metadata or {}
+        pdfs.append({
+            "name": meta.get("employeeName") or blob.name.rsplit("/", 1)[-1],
+            "role": meta.get("role"),
             "filename": blob.name.rsplit("/", 1)[-1],
             "pdfBase64": base64.b64encode(blob.download_as_bytes()).decode("ascii"),
         })

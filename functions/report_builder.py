@@ -1314,6 +1314,17 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 "role": KITCHEN_MANAGER_ROLE, "employee": km_name, "amount": km_amount,
                 "avgRatio": round(km_avg, 2), "windowWeeks": len(window_dates),
                 "multiplier": km_mult,
+                # Added 11/3/2026 (per Guapo, "a bonus recap for managers
+                # similar to what you produce for the drivers") -- the
+                # per-week ratios behind the average, for the new
+                # manager_bonus_pdf.py recap's full-breakdown table.
+                # weekEnding pre-formatted to a plain string (not a date
+                # object) so this survives the callable's JSON response
+                # untouched, same reason bonusWeeklyMetrics does below.
+                "weeklyDetail": [
+                    {"weekEnding": d.strftime("%Y-%m-%d"), "ratio": round(all_known_ratios[d], 2)}
+                    for d in sorted(window_dates)
+                ],
             })
 
     if is_supervisor_bonus_week(pay_date):
@@ -1338,6 +1349,12 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 "role": SUPERVISOR_ROLE, "employee": sup_name, "amount": sup_amount,
                 "avgRatio": round(sup_avg, 2), "windowWeeks": len(window_dates),
                 "multiplier": sup_mult, "quarter": f"{q_start:%m/%d/%Y}-{q_end:%m/%d/%Y}",
+                # Added 11/3/2026 -- see the matching comment on the
+                # Kitchen Manager bonus above.
+                "weeklyDetail": [
+                    {"weekEnding": d.strftime("%Y-%m-%d"), "ratio": round(all_known_ratios[d], 2)}
+                    for d in sorted(window_dates)
+                ],
             })
         else:
             warnings.append(
