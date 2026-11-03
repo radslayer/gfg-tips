@@ -872,26 +872,6 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     # and (on a non-tip week) is simply unused for any payout math.
     driver_days = {name: info.get("days", 0) for name, info in driver_info.items()}
 
-    # Added 9/23/2026 (per Guapo) -- caught this run: Andrea Redlinger is a
-    # W2 employee whose delivery/setup stipend is supposed to go through
-    # Delivery/Misc Amount requests (taxed as ADP wages), but someone also
-    # entered her in the 1099 Driver Payroll table for the same period --
-    # which pays her outside ADP as if she were a contractor AND dilutes
-    # the tip-pool days-driven split for the actual 1099 drivers. This
-    # can't be blocked outright (Driver Name is free text, and a manager
-    # backing Larry up won't always know who's W2), so it's a warning, the
-    # same as every other data-quality check in this function.
-    driver_employee_overlap = sorted(set(driver_info) & set(employees))
-    if driver_employee_overlap:
-        warnings.append(
-            "These names are entered as 1099 drivers this period but are also current W2 "
-            "employees, so they're being treated as a contractor paid outside ADP: " +
-            ", ".join(driver_employee_overlap) + ". If this is really a delivery/setup stipend "
-            "for their hourly job, log it as a Delivery/Misc Amount payroll request instead "
-            "(taxed correctly through ADP) and remove them from the 1099 Driver Payroll table -- "
-            "their \"days driven\" is also diluting the tip-pool split for the actual 1099 drivers."
-        )
-
     tip_week = is_tip_week(pay_date)
 
     original_records = parse_raw_export_text(csv_text)
@@ -959,6 +939,55 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     earnout_pivot = build_earnout_pivot(original_records, sister_map)
 
     computed, unknown_names, all_dates = compute_hours_and_wages(records, employees)
+    # Corrected 11/3/2026 (per Guapo, twice): (1) 1099 drivers at GFG ARE
+    # paid through ADP -- as contractors, on a separate ADP page entered
+    # after W2 wages, not "outside ADP" as this warning used to claim;
+    # and (2) a name can legitimately work BOTH a W2 kitchen job AND a
+    # 1099 driver role in the very same pay period (confirmed re: Randy
+    # Pruitt: "Randy has worked for us as both a W-2 employee in the
+    # kitchen and as a 1099 driver, period") -- that's expected, not a
+    # data-entry mistake, so this can't just key off static roster
+    # membership (set(driver_info) & set(employees)) the way it used to,
+    # since that fires every single period for anyone who ever has an
+    # `employees` doc at all, dual-role or not. What's actually worth a
+    # look (the original Andrea Redlinger case this was built for) is
+    # someone who was ACTUALLY WORKING THEIR HOURLY JOB this period --
+    # i.e. has real, payable W2 hours or is salaried -- and ALSO got
+    # entered as a 1099 driver the same period. `has_real_w2_pay` mirrors
+    # the exact condition the ADP Entry row-building loop below uses to
+    # decide whether someone gets a payable W2 row at all (salaried, or
+    # has a rate on file and actually punched hours this period per
+    # `computed`) -- someone with no rate on file, or a rate but zero
+    # hours this period (on leave, driving only this period, etc.), has
+    # no real W2 pay to be confused with their driver pay, so no warning.
+    def has_real_w2_pay(name):
+        info = employees.get(name)
+        if not info:
+            return False
+        if info.get("salaried"):
+            return True
+        if info.get("rate") is None:
+            return False
+        c = computed.get(name)
+        if not c:
+            return False
+        return c.get("regular_hours", 0) > 0 or c.get("ot_hours", 0) > 0
+
+    driver_employee_overlap = sorted(
+        name for name in (set(driver_info) & set(employees)) if has_real_w2_pay(name)
+    )
+    if driver_employee_overlap:
+        warnings.append(
+            "These names have real W2 hours clocked (or are salaried) this period AND are "
+            "entered as 1099 drivers this same period, so they're being paid both ways: " +
+            ", ".join(driver_employee_overlap) + ". If they genuinely worked both roles this "
+            "period, no action needed -- 1099 drivers are paid through ADP too, as contractors "
+            "on the page after W2 wages. If this is actually meant to be a delivery/setup "
+            "stipend for their hourly W2 job instead, log it as a Delivery/Misc Amount payroll "
+            "request so it's taxed as W2 wages, and remove them from the 1099 Driver Payroll "
+            "table for this period -- their \"days driven\" is also diluting the tip-pool split "
+            "for the actual 1099 drivers."
+        )
     # Added 9/23/2026 (per Guapo): a name on the Contract Labor roster is
     # deliberately not a wage employee -- pull it out of the "no wage rate
     # on file" bucket (that warning is for names nobody's told this app
@@ -1128,36 +1157,37 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
 
     pto_hours, pto_ids, u1 = sum_by_employee(pending_pto, "hours", employees)
     # Added 11/2/2026 (per Guapo): a 1099 driver can rack up an Employee
-    # Purchase too, same as a W2 employee. Reordered 11/3/2026 (per
-    # Guapo, re: Randy Pruitt: "he's been driving and not working in the
-    # kitchen for the past several months") -- purchases are now matched
-    # against THIS PERIOD'S actual driver activity (`driver_info`'s keys,
-    # i.e. whoever Larry actually entered on the Tip Pool tab this
-    # period) FIRST, before falling back to the static W2 `employees`
-    # roster. Originally this matched W2 first: that silently swallowed
-    # Randy's purchase, because he still has a leftover W2 `employees`
-    # doc from when he was expected to start kitchen work (added
-    # 10/23/2026) with no rate ever set on it, since he never actually
-    # worked hourly there -- "known" to the W2 pass, so it never fell
-    # through to the driver pass, but then written NOWHERE, because the
-    # ADP Entry row-building loop skips anyone with no rate and not
-    # salaried (see "No hourly rate on file and not marked Salaried"
-    # below). The purchase just vanished: no deduction, no warning,
-    # nothing -- confirmed missing from the Nov 6, 2026 preview before
-    # this fix. Checking driver_info first means THIS period's actual
-    # activity decides which bucket a purchase goes in, the same way
-    # driver identity is already determined everywhere else in this
-    # file, not a static roster flag that can go stale. Only purchases
-    # get this driver-first treatment -- PTO/Misc Amount/Misc Reimburse
-    # genuinely don't apply to a 1099 contractor (no W2 wages to take
-    # PTO against), so a driver name logged against one of those still
-    # correctly falls through to the unresolved-name warning below. The
-    # deduction itself happens down in the Driver Payroll (1099s) Recap
-    # table, where driver_purchases is subtracted from Tips + Deliveries
-    # $ Total + Setups $ Total.
+    # Purchase too, same as a W2 employee. Originally matched W2 first,
+    # which silently swallowed Randy Pruitt's purchase: he had a
+    # leftover W2 `employees` doc with no rate ever set on it, so the W2
+    # pass "knew" his name and never fell through to the driver pass,
+    # but then the ADP Entry row-building loop skips anyone with no rate
+    # and not salaried -- the purchase vanished with no deduction and no
+    # warning (confirmed missing from the Nov 6, 2026 preview). Reordered
+    # 11/3/2026 to check driver_info first unconditionally -- but Guapo
+    # then clarified Randy genuinely works BOTH roles ("Randy has worked
+    # for us as both a W-2 employee in the kitchen and as a 1099 driver,
+    # period"), so a blanket driver-first order is itself unsafe: it
+    # would misroute a purchase to the driver bucket even in a period
+    # where he has real, payable W2 wages to deduct it from instead.
+    # Corrected 11/3/2026: a purchase only goes to the driver bucket when
+    # the person would otherwise get no real W2 row this period at all
+    # (`not has_real_w2_pay`, the same no-rate-or-zero-hours condition
+    # that caused the original silent-drop bug) -- i.e. driver-only
+    # periods still route correctly (the original bug, now fixed), and a
+    # genuine dual-role period routes the purchase to the real W2
+    # paycheck instead (the original, correct, pre-11/3 intent), never
+    # dropping it either way. Only purchases get this treatment -- PTO/
+    # Misc Amount/Misc Reimburse genuinely don't apply to a 1099
+    # contractor (no W2 wages to take PTO against), so a driver name
+    # logged against one of those still correctly falls through to the
+    # unresolved-name warning below. The deduction itself happens down
+    # in the Driver Payroll (1099s) Recap table, where driver_purchases
+    # is subtracted from Tips + Deliveries $ Total + Setups $ Total.
     driver_purchase_candidates = [
         r for r in pending_purchases
         if (r.get("employeeName") or "").strip() in driver_info
+        and not has_real_w2_pay((r.get("employeeName") or "").strip())
     ]
     driver_purchases, driver_purch_ids, _ = sum_by_employee(
         driver_purchase_candidates, "amount", driver_info)

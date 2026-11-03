@@ -11,32 +11,56 @@ Last updated: 2026-11-03
 ## Current state / in progress
 
 - **Randy Pruitt's Employee Purchase was silently vanishing, not
-  deducted anywhere -- found and fixed 11/3/2026.** Confirmed while
-  verifying the Gratuity fix's preview run for the Nov 6, 2026 period:
-  Randy had a pending $2.87 "Gloves" purchase (entered by Rod, 10/30/26)
-  but the preview's 1099 driver table showed $0.00 Employee Purchases
-  for him, and he didn't appear in the W2 EE Purchases column either.
-  Root cause: the two-pass purchase-matching logic (added 11/2/2026 for
-  the driver-purchase feature) matched a purchase against the W2
-  `employees` roster FIRST, falling back to drivers only for names that
-  didn't match. Randy still has a leftover W2 `employees` doc (added
-  10/23/2026, back when he was expected to start kitchen work) with no
-  rate ever set on it, since -- confirmed by Guapo 11/2/2026 -- he's
-  actually been driving only, not working kitchen, for the past several
-  months. That made his purchase "resolve" against W2 on the first
-  pass, but then the ADP Entry row-building loop skips anyone with no
-  rate and not salaried, so the row (and the purchase) was dropped
-  entirely -- no deduction, no warning, nothing. Fixed by reordering: a
-  purchase now matches THIS PERIOD's actual driver activity
-  (`driver_info`'s keys) first, before falling back to the static W2
-  roster -- the same "trust this period's real activity, not a static
-  roster flag" principle already used for driver identity elsewhere in
-  this file. Unit-verified against the exact Randy Pruitt scenario
-  (stale no-rate W2 doc + this period's driver activity + a pending
-  purchase) -- now correctly lands in `driver_purchases`, not
-  `ee_purchases`. **Not yet re-verified live** -- needs a fresh preview
-  run after this deploys to confirm Randy's $2.87 now shows as a
-  deduction in the 1099 driver payroll table.
+  deducted anywhere -- found 11/3/2026, fixed twice (the first fix was
+  itself based on a wrong assumption, corrected same day).** Confirmed
+  while verifying the Gratuity fix's preview run for the Nov 6, 2026
+  period: Randy had a pending $2.87 "Gloves" purchase (entered by Rod,
+  10/30/26) but the preview's 1099 driver table showed $0.00 Employee
+  Purchases for him, and he didn't appear in the W2 EE Purchases column
+  either. Root cause: the two-pass purchase-matching logic (added
+  11/2/2026 for the driver-purchase feature) matched a purchase against
+  the W2 `employees` roster FIRST, falling back to drivers only for
+  names that didn't match. Randy has a leftover W2 `employees` doc with
+  no rate on it, so his purchase "resolved" against W2 on the first
+  pass, but the ADP Entry row-building loop skips anyone with no rate
+  and not salaried, so the row (and the purchase) was dropped entirely
+  -- no deduction, no warning, nothing.
+  First fix (11/3, superseded same day): reordered to match driver_info
+  first, unconditionally -- based on Claude misreading Guapo's "he's
+  been driving and not working in the kitchen for the past several
+  months" as "driver instead of kitchen, full stop." Guapo corrected
+  this directly: "Randy has worked for us as both a W-2 employee in the
+  kitchen and as a 1099 driver, period." A blanket driver-first order
+  would misroute a purchase to the driver bucket even in a period where
+  Randy has real, payable W2 wages to deduct it from -- itself a bug in
+  the other direction.
+  **Final fix (11/3):** a purchase now only goes to the driver bucket
+  when the person has no real, payable W2 row this period at all
+  (`has_real_w2_pay` -- salaried, or has a rate on file AND actually
+  punched hours this period per `computed`; same condition the ADP row
+  loop itself uses). A driver-only period for Randy still routes
+  correctly (original bug, fixed); a genuine dual-role period routes
+  the purchase to his real W2 paycheck instead, never dropping it
+  either way. The same `has_real_w2_pay` check also now gates the
+  "1099 driver but also current W2 employee" warning (previously fired
+  every single period just from static roster membership -- a
+  guaranteed false positive for Randy specifically, since he's always
+  on both rosters; now only fires when someone has REAL concurrent W2
+  hours/salary the same period they're entered as a driver). That
+  warning's wording was also corrected -- it used to claim 1099 drivers
+  are "paid outside ADP," which Rod corrected: "We pay 1099 drivers
+  THROUGH ADP as CONTRACTORS (which is the page after we enter W2
+  wages)." The warning no longer makes that claim, and no longer
+  presumes dual-role activity is a mistake by default. See
+  `bonus_data/README.md` for the corrected Randy Pruitt note.
+  Unit-verified (logic-level, all four cases): driver-only/no-rate
+  Randy -> routes to driver, no warning; dual-role Randy with real
+  hours this period -> routes to W2, warning fires factually; someone
+  on leave with a rate but zero hours -> no false warning; a salaried
+  person mistakenly entered as a driver -> warning still fires (the
+  original Andrea Redlinger catch is preserved). **Not yet re-verified
+  live against a real dual-role period** -- needs a fresh preview run
+  after this deploys.
 
 - **New: raw timeclock export date-coverage check, added 11/3/2026 per
   Guapo** ("please add that check... that the dates on the reports are
