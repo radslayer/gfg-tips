@@ -598,11 +598,23 @@ function checkDriverEmployeeOverlap() {
   }
   const knownNames = new Set(employeesCache.map((e) => e.name));
   const overlap = [...new Set(readDriverRows().map((d) => d.name))].filter((n) => knownNames.has(n));
+  // Corrected 11/3/2026 (per Guapo, same correction as the backend
+  // warning this mirrors): 1099 drivers ARE paid through ADP, as
+  // contractors on the page after W2 wages -- not "outside ADP". Also
+  // softened to not presume a mistake by default: someone can
+  // legitimately hold both a W2 job and a 1099 driver role in the same
+  // period (confirmed re: Randy Pruitt). This client-side check has no
+  // access to timeclock data from here, so it can't tell (the way the
+  // authoritative backend check now can) whether the overlap is real
+  // concurrent activity or just static roster membership -- it's only
+  // ever a quick heads-up anyway (see the comment above this function).
   el.textContent = overlap.length
-    ? `${overlap.join(", ")} ${overlap.length > 1 ? "are" : "is"} already a W2 employee -- a driver ` +
-      `row pays outside ADP as a contractor and adds to the tip-pool days-driven split. If this is a ` +
-      `delivery/setup stipend for their hourly job, log it as a Delivery/Misc Amount payroll request ` +
-      `instead and remove ${overlap.length > 1 ? "them" : "this row"} from the table below.`
+    ? `${overlap.join(", ")} ${overlap.length > 1 ? "are" : "is"} also a current W2 employee -- if ` +
+      `${overlap.length > 1 ? "they're" : "this is"} genuinely working both roles this period, no ` +
+      `action needed (1099 drivers are paid through ADP too, as contractors). If this is actually ` +
+      `meant to be a delivery/setup stipend for their hourly W2 job instead, log it as a Delivery/Misc ` +
+      `Amount payroll request so it's taxed as W2 wages, and remove ${overlap.length > 1 ? "them" : "this row"} ` +
+      `from the table below.`
     : "";
 }
 $("driverRows").addEventListener("input", (e) => {

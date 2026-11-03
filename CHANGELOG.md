@@ -538,3 +538,17 @@ Last updated: 2026-11-03
 - Resolve Open questions 2-3 with Rod as they come up.
 - Decide whether to `git add`/commit `bonus_data/` (hold until Open
   question 1 is settled).
+
+- **Also found and fixed 11/3/2026 (while reviewing the live Tip Pool tab
+  for the Nov 6 ADP entry): the SAME "paid outside ADP" / presumption-of-
+  mistake wording also existed in a second, separate place** --
+  `app.js`'s `checkDriverEmployeeOverlap`, a live client-side heads-up
+  shown on the Tip Pool entry tab itself while typing driver rows
+  (explicitly documented in its own comment as non-authoritative -- the
+  real check is the backend `report_builder.py` warning fixed earlier
+  today). Same wording fix applied (no more "outside ADP" claim, no
+  longer presumes dual-role is a mistake). Left the underlying check
+  itself as a static-roster-only heads-up, since this client-side code
+  has no access to timeclock/hours data to do the same real-activity
+  gating the backend now does -- not worth the complexity for a
+  non-authoritative nudge.
