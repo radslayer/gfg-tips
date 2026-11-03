@@ -6,9 +6,58 @@ don't wait to be asked to update it. Sections are rewritten/condensed when
 stale, not just appended to. A fresh Claude session should be able to read
 this doc alone and pick up work without replaying prior conversations.
 
-Last updated: 2026-11-02
+Last updated: 2026-11-03
 
 ## Current state / in progress
+
+- **Randy Pruitt's Employee Purchase was silently vanishing, not
+  deducted anywhere -- found and fixed 11/3/2026.** Confirmed while
+  verifying the Gratuity fix's preview run for the Nov 6, 2026 period:
+  Randy had a pending $2.87 "Gloves" purchase (entered by Rod, 10/30/26)
+  but the preview's 1099 driver table showed $0.00 Employee Purchases
+  for him, and he didn't appear in the W2 EE Purchases column either.
+  Root cause: the two-pass purchase-matching logic (added 11/2/2026 for
+  the driver-purchase feature) matched a purchase against the W2
+  `employees` roster FIRST, falling back to drivers only for names that
+  didn't match. Randy still has a leftover W2 `employees` doc (added
+  10/23/2026, back when he was expected to start kitchen work) with no
+  rate ever set on it, since -- confirmed by Guapo 11/2/2026 -- he's
+  actually been driving only, not working kitchen, for the past several
+  months. That made his purchase "resolve" against W2 on the first
+  pass, but then the ADP Entry row-building loop skips anyone with no
+  rate and not salaried, so the row (and the purchase) was dropped
+  entirely -- no deduction, no warning, nothing. Fixed by reordering: a
+  purchase now matches THIS PERIOD's actual driver activity
+  (`driver_info`'s keys) first, before falling back to the static W2
+  roster -- the same "trust this period's real activity, not a static
+  roster flag" principle already used for driver identity elsewhere in
+  this file. Unit-verified against the exact Randy Pruitt scenario
+  (stale no-rate W2 doc + this period's driver activity + a pending
+  purchase) -- now correctly lands in `driver_purchases`, not
+  `ee_purchases`. **Not yet re-verified live** -- needs a fresh preview
+  run after this deploys to confirm Randy's $2.87 now shows as a
+  deduction in the 1099 driver payroll table.
+
+- **New: raw timeclock export date-coverage check, added 11/3/2026 per
+  Guapo** ("please add that check... that the dates on the reports are
+  inclusive of the entire two week span and appear to be correct").
+  Before this, an uploaded Transaction Report that didn't actually cover
+  this pay period's full two weeks would silently understate everyone's
+  hours/wages and Kitchen Hours (and therefore the bonus ratio) with no
+  error at all. Now `build_report` reads the export's own declared
+  "Date Range:" header (every row repeats it verbatim) and hard-stops
+  with a clear `ReportError` before any hours/wages/bonus math runs if
+  that declared range doesn't fully cover the required
+  Sun-Sat-x2 span -- a wider declared range is fine, same policy as the
+  orders CSV. Deliberately checks the DECLARED range, not the actual
+  punch dates in the file: the real 11/6/2026 Transaction Report has
+  zero punches on its first Sunday (10/18) and last Saturday (10/31)
+  even though its declared range correctly covers both -- checking
+  actual punches instead would have rejected a perfectly good file.
+  Warns (doesn't block) if the header can't be found/parsed at all,
+  since that means the check genuinely can't run, not that the file is
+  wrong. Unit-verified against the real 11/6/2026 file (passes) and a
+  synthetic short-range file (correctly rejected).
 
 - **Kitchen Manager bonus formula — ROOT CAUSE FOUND AND FIXED
   11/2/2026, not yet deployed.** Rod asked directly (11/2) why Mike

@@ -24,6 +24,7 @@ build_report's docstring and the Man-Days & Tips Calc sheet for detail.
 """
 import csv
 import io
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -511,6 +512,45 @@ def build_earnout_pivot(records, sister_map):
 # ---------------------------------------------------------------------------
 # Step 1: parse the raw timeclock export (from decoded text, not a path)
 # ---------------------------------------------------------------------------
+_DATE_RANGE_RE = re.compile(
+    r"([A-Za-z]+ \d{1,2},\s*\d{4})[^A-Za-z0-9]*?\d{1,2}:\d{2}\s*[AP]M"
+    r"\s*(?:To|-|–|—|through)\s*"
+    r"([A-Za-z]+ \d{1,2},\s*\d{4})",
+    re.IGNORECASE,
+)
+
+
+def _parse_declared_date_range(text):
+    """Finds the TimePilot "Transaction Report" header's own declared
+    date range (e.g. "Date Range:","October 18, 2026 12:00 AM  To
+    October 31, 2026 11:59 PM") and returns (start, end) as datetimes
+    (date only, time dropped), or None if no such header text is found
+    or it doesn't parse -- see the caller in build_report for how that's
+    handled (warn, don't block, since this check literally cannot run).
+    Only looks at the first data row -- every row repeats this same
+    header verbatim in this export format. Searches the row's cells
+    joined back together rather than any single cell/fixed column index
+    -- confirmed 11/3/2026 the header's labels ("Report Date:", "Date
+    Range:") and their values are NOT adjacent cells (two label cells
+    are followed later by their two value cells, in matching order, not
+    label-then-its-own-value-then-next-label), so a position-based
+    lookup is fragile; a direct regex search across the whole row isn't."""
+    reader = csv.reader(io.StringIO(text))
+    try:
+        row = next(reader)
+    except StopIteration:
+        return None
+    m = _DATE_RANGE_RE.search(" | ".join(row))
+    if not m:
+        return None
+    try:
+        start = datetime.strptime(m.group(1).replace("  ", " ").strip(), "%B %d, %Y")
+        end = datetime.strptime(m.group(2).replace("  ", " ").strip(), "%B %d, %Y")
+    except ValueError:
+        return None
+    return start, end
+
+
 def parse_raw_export_text(text):
     records = []
     reader = csv.reader(io.StringIO(text))
@@ -855,6 +895,66 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     tip_week = is_tip_week(pay_date)
 
     original_records = parse_raw_export_text(csv_text)
+
+    # This period's two calendar weeks (moved up 11/3/2026, per Guapo, so
+    # the raw timeclock export's actual date coverage can be checked
+    # before anything downstream computes off of it -- see the check
+    # right below). Confirmed 10/6/2026 (per Guapo): a workweek runs
+    # Sunday-Saturday, and the paycheck for a workweek that closes on a
+    # Saturday goes out the FOLLOWING Friday -- a 6-day lag, not
+    # same-day. So pay_date (always a Friday) is 6 days AFTER the second
+    # covered workweek's Saturday close, not on it.
+    week2_ending = pay_date - timedelta(days=6)   # Saturday closing the more recent covered week
+    week1_ending = week2_ending - timedelta(days=7)  # Saturday closing the week before that
+    week2_start = week2_ending - timedelta(days=6)   # Sunday
+    week1_start = week1_ending - timedelta(days=6)   # Sunday
+
+    # Added 11/3/2026 (per Guapo: "please add that check... that the
+    # dates on the reports are inclusive of the entire two week span and
+    # appear to be correct"): checks the export's own declared "Date
+    # Range:" header (every TimePilot "Transaction Report" row repeats
+    # it -- row 0, the cell right after a "Date Range:" label cell, e.g.
+    # "October 18, 2026 12:00 AM  To  October 31, 2026 11:59 PM") covers
+    # this pay period's full two weeks, BEFORE any hours/wages/bonus math
+    # runs off of it. Deliberately checks the DECLARED range, not the
+    # actual punch dates found in the file -- a correct export can
+    # legitimately have zero punches on its very first Sunday or last
+    # Saturday if nobody happened to clock in that specific day (seen on
+    # the real 11/6/2026 file: declared range 10/18-10/31, but the
+    # earliest/latest actual punches were 10/19/10/30), so checking
+    # actual punches instead would reject perfectly good files. A
+    # narrower declared range, though, means real hours for part of the
+    # period are structurally impossible to be in this file at all --
+    # exactly the kind of bad-input bug that caused the Gratuity mix-up
+    # on 11/2/2026, just from the other direction (missing data instead
+    # of an extra column) -- so that case is a hard stop. A wider
+    # declared range is fine (same "any wider range is fine, everything
+    # outside this period's weeks is ignored" policy as the orders CSV).
+    # If the header can't be found/parsed at all (export format changed,
+    # or this isn't actually a TimePilot Transaction Report), this
+    # doesn't block the report -- it can't tell either way -- but it
+    # does warn, so it's visible rather than silently skipped.
+    declared_range = _parse_declared_date_range(csv_text)
+    if declared_range is None:
+        warnings.append(
+            f"Couldn't find/parse a \"Date Range:\" header in the uploaded "
+            f"timeclock export ({raw_csv_name}) to confirm it covers this "
+            f"period's full two weeks ({week1_start:%m/%d/%Y}-"
+            f"{week2_ending:%m/%d/%Y}) -- double-check it by eye before "
+            f"relying on this report."
+        )
+    else:
+        declared_start, declared_end = declared_range
+        if declared_start > week1_start or declared_end < week2_ending:
+            raise ReportError(
+                f"The uploaded timeclock export ({raw_csv_name}) says its own "
+                f"date range is {declared_start:%m/%d/%Y} - {declared_end:%m/%d/%Y}, "
+                f"which doesn't cover this pay period's full two weeks "
+                f"({week1_start:%m/%d/%Y} (Sun) through {week2_ending:%m/%d/%Y} "
+                f"(Sat)). Upload the correct Transaction Report export for this "
+                f"period (or a wider one that still includes both of those weeks)."
+            )
+
     records = apply_entity_map(original_records, sister_map)
     earnout_pivot = build_earnout_pivot(original_records, sister_map)
 
@@ -1027,31 +1127,47 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         return dict(totals), consumed_ids, unresolved
 
     pto_hours, pto_ids, u1 = sum_by_employee(pending_pto, "hours", employees)
-    ee_purchases, purch_ids, u2 = sum_by_employee(pending_purchases, "amount", employees)
     # Added 11/2/2026 (per Guapo): a 1099 driver can rack up an Employee
-    # Purchase too, same as a W2 employee -- but drivers were never in
-    # `employees` (no W2 wages, no ADP row), so before this fix any
-    # purchase logged against a driver's name just fell into `u2` as
-    # "unresolved" every single period, generated a warning, and was
-    # never actually deducted from anything -- it just sat there forever.
-    # Second pass: whatever didn't match a W2 employee name, try matching
-    # it against THIS period's own driver names -- `driver_info`'s keys,
-    # i.e. whoever Larry actually entered on the Tip Pool tab this period,
-    # not a separately-maintained name list that could drift out of sync
-    # with it (see the Rod-dual-row bug fixed earlier the same week for
-    # exactly what that drift looks like). Only purchases get this second
-    # pass -- PTO/Misc Amount/Misc Reimburse genuinely don't apply to a
-    # 1099 contractor (no W2 wages to take PTO against), so a driver name
-    # logged against one of those still correctly falls through to the
-    # unresolved-name warning below. The deduction itself happens down in
-    # the Driver Payroll (1099s) Recap table, where driver_purchases is
-    # subtracted from Tips + Deliveries $ Total + Setups $ Total.
+    # Purchase too, same as a W2 employee. Reordered 11/3/2026 (per
+    # Guapo, re: Randy Pruitt: "he's been driving and not working in the
+    # kitchen for the past several months") -- purchases are now matched
+    # against THIS PERIOD'S actual driver activity (`driver_info`'s keys,
+    # i.e. whoever Larry actually entered on the Tip Pool tab this
+    # period) FIRST, before falling back to the static W2 `employees`
+    # roster. Originally this matched W2 first: that silently swallowed
+    # Randy's purchase, because he still has a leftover W2 `employees`
+    # doc from when he was expected to start kitchen work (added
+    # 10/23/2026) with no rate ever set on it, since he never actually
+    # worked hourly there -- "known" to the W2 pass, so it never fell
+    # through to the driver pass, but then written NOWHERE, because the
+    # ADP Entry row-building loop skips anyone with no rate and not
+    # salaried (see "No hourly rate on file and not marked Salaried"
+    # below). The purchase just vanished: no deduction, no warning,
+    # nothing -- confirmed missing from the Nov 6, 2026 preview before
+    # this fix. Checking driver_info first means THIS period's actual
+    # activity decides which bucket a purchase goes in, the same way
+    # driver identity is already determined everywhere else in this
+    # file, not a static roster flag that can go stale. Only purchases
+    # get this driver-first treatment -- PTO/Misc Amount/Misc Reimburse
+    # genuinely don't apply to a 1099 contractor (no W2 wages to take
+    # PTO against), so a driver name logged against one of those still
+    # correctly falls through to the unresolved-name warning below. The
+    # deduction itself happens down in the Driver Payroll (1099s) Recap
+    # table, where driver_purchases is subtracted from Tips + Deliveries
+    # $ Total + Setups $ Total.
     driver_purchase_candidates = [
-        r for r in pending_purchases if (r.get("employeeName") or "").strip() in u2
+        r for r in pending_purchases
+        if (r.get("employeeName") or "").strip() in driver_info
     ]
-    driver_purchases, driver_purch_ids, u2 = sum_by_employee(
+    driver_purchases, driver_purch_ids, _ = sum_by_employee(
         driver_purchase_candidates, "amount", driver_info)
-    purch_ids = purch_ids + driver_purch_ids
+    _consumed_by_driver_pass = set(driver_purch_ids)
+    remaining_purchases = [
+        r for r in pending_purchases if r.get("id") not in _consumed_by_driver_pass
+    ]
+    ee_purchases, w2_purch_ids, u2 = sum_by_employee(
+        remaining_purchases, "amount", employees)
+    purch_ids = w2_purch_ids + driver_purch_ids
     # Added 11/2/2026 (per Guapo): the Driver Payment Advice PDF itemizes
     # each individual purchase (product, date, amount) rather than just
     # showing one aggregated dollar figure, whenever a driver has more
@@ -1086,15 +1202,9 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     }
 
     # -------- Kitchen Manager / Supervisor bonus --------
-    # This period's two calendar weeks. Confirmed 10/6/2026 (per Guapo):
-    # a workweek runs Sunday-Saturday, and the paycheck for a workweek
-    # that closes on a Saturday goes out the FOLLOWING Friday -- a 6-day
-    # lag, not same-day. So pay_date (always a Friday) is 6 days AFTER
-    # the second covered workweek's Saturday close, not on it.
-    week2_ending = pay_date - timedelta(days=6)   # Saturday closing the more recent covered week
-    week1_ending = week2_ending - timedelta(days=7)  # Saturday closing the week before that
-    week2_start = week2_ending - timedelta(days=6)   # Sunday
-    week1_start = week1_ending - timedelta(days=6)   # Sunday
+    # week1_start/week1_ending/week2_start/week2_ending were computed
+    # earlier, right after parsing the raw timeclock export, so the
+    # date-coverage check above could run before anything else did.
 
     # Added 10/20/2026 (per Guapo): an uploaded orders CSV is an alternative
     # to typing the two Sales $ numbers by hand -- when given, it OVERRIDES
