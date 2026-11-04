@@ -1928,23 +1928,63 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
 
     if driver_days_for_tips:
         ws6 = wb.create_sheet("Driver Tip Payouts (1099s)")
-        note = ["Not part of ADP Entry -- 1099 contractors aren't payroll. Pulled from " + TIPS_SHEET + "."]
+        # Expanded 11/4/2026 (per Guapo -- "I want you to include the full
+        # calculation for driver payouts... let's put everything we can in
+        # that record"): this sheet used to show Tips only. It now also
+        # carries Deliveries $ Total / Setups $ Total / Employee Purchases
+        # / Total -- the same figures as the "Driver Payroll (1099s) Recap"
+        # table on the Contractors Payments sheet -- so the full driver
+        # payout calculation lives in one place instead of being split
+        # across two sheets.
+        note = [
+            "Not part of ADP Entry -- 1099 contractors aren't payroll. Tips pulled from " + TIPS_SHEET + ";",
+            "Deliveries $ Total / Setups $ Total / Employee Purchases are this period's own entries from",
+            "the Tip Pool tab -- same figures as the \"Driver Payroll (1099s) Recap\" table on the",
+            "Contractors Payments sheet, shown here too so the full driver payout calculation is in one place.",
+        ]
         if tip_week:
             note.append("Days Driven here is THIS period's days plus the prior period's (the full 4-week window).")
-        r6 = title_block(ws6, "Driver Tip Payouts", note)
-        for i, h in enumerate(["Driver", "Days Driven", "Tip $ Payout"], start=1):
+        r6 = title_block(ws6, "Driver Payouts (Tips + Deliveries + Setups)", note)
+        headers6 = ["Driver", "Days Driven", "Tip $ Payout", "Deliveries $ Total", "Setups $ Total",
+                    "Employee Purchases", "Total"]
+        for i, h in enumerate(headers6, start=1):
             ws6.cell(row=r6, column=i, value=h)
-        style_header(ws6, r6, 3)
+        style_header(ws6, r6, len(headers6))
         row = r6 + 1
+        w6_first_row = row
         for dname in driver_days_for_tips:
+            info = driver_info.get(dname, {})
             ws6.cell(row=row, column=1, value=dname).font = INPUT_FONT
             tips_f = f'=VLOOKUP(A{row},{TIPS_SHEET}!$A${drv_rows_start}:$G${drv_rows_end},7,FALSE)'
             ws6.cell(row=row, column=2, value=driver_days_for_tips[dname]).font = INPUT_FONT
             ws6.cell(row=row, column=3, value=tips_f).font = FORMULA_FONT
             ws6.cell(row=row, column=3).number_format = "$#,##0.00"
-            for cc in range(1, 4):
+            for cc, field in ((4, "deliveries"), (5, "setups")):
+                c = ws6.cell(row=row, column=cc, value=info.get(field, 0) or 0)
+                c.font = INPUT_FONT
+                c.number_format = "$#,##0.00"
+            c = ws6.cell(row=row, column=6, value=driver_purchases.get(dname, 0) or 0)
+            c.font = INPUT_FONT
+            c.number_format = "$#,##0.00"
+            total_f = f"=C{row}+D{row}+E{row}-F{row}"
+            c = ws6.cell(row=row, column=7, value=total_f)
+            c.font = FORMULA_FONT
+            c.number_format = "$#,##0.00"
+            for cc in range(1, len(headers6) + 1):
                 ws6.cell(row=row, column=cc).border = THIN
             row += 1
+        w6_last_row = row - 1
+        if w6_last_row >= w6_first_row:
+            ws6.cell(row=row, column=1, value="Totals").font = BOLD_FONT
+            for cc in (2, 3, 4, 5, 6, 7):
+                col_letter = get_column_letter(cc)
+                c = ws6.cell(row=row, column=cc,
+                             value=f"=SUM({col_letter}{w6_first_row}:{col_letter}{w6_last_row})")
+                c.font = BOLD_FONT
+                c.number_format = "$#,##0.00"
+            for cc in range(1, len(headers6) + 1):
+                ws6.cell(row=row, column=cc).border = THIN
+                ws6.cell(row=row, column=cc).fill = TOTALS_FILL
         autosize(ws6)
 
     if driver_info or contract_labor_hours:

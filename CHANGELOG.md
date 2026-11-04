@@ -6,9 +6,11 @@ don't wait to be asked to update it. Sections are rewritten/condensed when
 stale, not just appended to. A fresh Claude session should be able to read
 this doc alone and pick up work without replaying prior conversations.
 
-Last updated: 2026-11-03
+Last updated: 2026-11-04
 
 ## Current state / in progress
+
+- **"Driver Tip Payouts (1099s)" sheet expanded to the full driver payout calculation, 11/4/2026 (per Guapo: "I want you to include the full calculation for driver payouts. I see the tips, but not the setups and deliveries. Let's put everything we can in that record").** This sheet used to show only Tips -- Deliveries $ Total/Setups $ Total/Employee Purchases/Total only appeared on the separate "Contractors Payments" sheet's "Driver Payroll (1099s) Recap" table. Now both sheets carry the full breakdown (Driver, Days Driven, Tip $ Payout, Deliveries $ Total, Setups $ Total, Employee Purchases, Total, plus a Totals row), pulling from the same `driver_info`/`driver_purchases` data so the two sheets can never drift out of sync. Deliveries/Setups/Purchases are still flat per-driver dollar totals entered on the Tip Pool tab (not itemized line items -- that's all the app currently stores for them), so "full calculation" here means every number that feeds a driver's payout is now visible on this one sheet, not an itemized receipt-level breakdown. Verified with a synthetic `build_report()` run (two test drivers with deliveries/setups/a purchase) -- new columns populate correctly and the Totals row sums each column. Not yet deployed.
 
 - **New: Kitchen Manager/Supervisor bonus recap PDFs, built 11/3/2026
   (per Guapo: "I also need a bonus recap for managers similar to what
