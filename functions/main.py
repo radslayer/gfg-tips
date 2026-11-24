@@ -41,6 +41,7 @@ _REQUEST_COLLECTIONS = {
     "employeePurchases": "amount",
     "miscAmounts": "amount",
     "miscReimbursements": "amount",
+    "bonusRequests": "amount",
 }
 
 
@@ -608,6 +609,7 @@ def generate_payroll_report(req: https_fn.CallableRequest):
             pending_purchases=pending["employeePurchases"],
             pending_misc_amt=pending["miscAmounts"],
             pending_misc_reimb=pending["miscReimbursements"],
+            pending_bonus=pending["bonusRequests"],
             sister_map=sister_map,
             prior_driver_info=prior_driver_info,
             prior_w2_man_days=prior_w2_man_days,

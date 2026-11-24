@@ -789,7 +789,8 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                   pending_misc_reimb, sister_map=None, prior_driver_info=None,
                   prior_w2_man_days=None, contract_labor=None,
                   sales_week1=0.0, sales_week2=0.0, historical_weekly_ratios=None,
-                  orders_csv_text=None, orders_csv_name="orders.csv"):
+                  orders_csv_text=None, orders_csv_name="orders.csv",
+                  pending_bonus=None):
     """employees/order: same shape as before (dict name -> {department,
     rate, tip_eligible}, plus the name order list).
 
@@ -1218,9 +1219,17 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         })
     misc_amt, misc_amt_ids, u3 = sum_by_employee(pending_misc_amt, "amount", employees)
     misc_reimb, misc_reimb_ids, u4 = sum_by_employee(pending_misc_reimb, "amount", employees)
+    # Added 11/24/2026 (per Guapo) -- a 5th manager-submittable request type,
+    # for ad hoc dollar bonuses (birthday bonuses and the like) that need to
+    # land in ADP's real "Bonus Amount" column rather than the separate
+    # "Misc Amount (deliveries)" column the other dollar-amount types use.
+    # Merged into bonus_amounts below, after the automatic Kitchen Manager/
+    # Supervisor bonus calc finishes building that dict, so both sources
+    # land summed in the same ADP column.
+    bonus_requests, bonus_req_ids, u5 = sum_by_employee(pending_bonus or [], "amount", employees)
     if thao_makeup:
         pto_hours[THAO_NAME] = round(pto_hours.get(THAO_NAME, 0.0) + thao_makeup, 2)
-    unresolved_names = sorted(set(u1) | set(u2) | set(u3) | set(u4))
+    unresolved_names = sorted(set(u1) | set(u2) | set(u3) | set(u4) | set(u5))
     if unresolved_names:
         warnings.append(
             "These pending requests reference a name that isn't in the "
@@ -1229,6 +1238,7 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     consumed_ids = {
         "ptoRequests": pto_ids, "employeePurchases": purch_ids,
         "miscAmounts": misc_amt_ids, "miscReimbursements": misc_reimb_ids,
+        "bonusRequests": bonus_req_ids,
     }
 
     # -------- Kitchen Manager / Supervisor bonus --------
@@ -1362,6 +1372,13 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
                 f"history was found for the quarter that just ended ({q_start:%m/%d/%Y}-"
                 f"{q_end:%m/%d/%Y}) -- no bonus was computed."
             )
+
+    # Merge in manually-submitted Bonus requests (birthday bonuses, etc.)
+    # additively -- a period can have both an automatic Kitchen Manager/
+    # Supervisor bonus AND a manual one for the same person, and both
+    # should land in ADP's "Bonus Amount" column together.
+    for _name, _amt in bonus_requests.items():
+        bonus_amounts[_name] = bonus_amounts.get(_name, 0.0) + _amt
 
     # -------- daily records for Sheet 1 --------
     daily_hours = defaultdict(float)
@@ -1624,22 +1641,22 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
         "Purchases / Misc Amount / Misc Reimbursement collections), swept up as of this report run.",
     ])
     headers4 = ["Employee", "PTO Hours", "EE Purchases", "Misc Amount (deliveries)",
-                "Misc Reimburse (grocery runs)"]
+                "Misc Reimburse (grocery runs)", "Bonus Requests"]
     for i, h in enumerate(headers4, start=1):
         ws4.cell(row=r4, column=i, value=h)
     style_header(ws4, r4, len(headers4))
     ded_first_row = r4 + 1
     row = ded_first_row
-    all_ded_names = sorted(set(pto_hours) | set(ee_purchases) | set(misc_amt) | set(misc_reimb))
+    all_ded_names = sorted(set(pto_hours) | set(ee_purchases) | set(misc_amt) | set(misc_reimb) | set(bonus_requests))
     for name in all_ded_names:
         ws4.cell(row=row, column=1, value=name).font = INPUT_FONT
-        for i, d in enumerate([pto_hours, ee_purchases, misc_amt, misc_reimb], start=2):
+        for i, d in enumerate([pto_hours, ee_purchases, misc_amt, misc_reimb, bonus_requests], start=2):
             v = d.get(name)
             c = ws4.cell(row=row, column=i, value=v)
             c.font = INPUT_FONT
             if v is not None:
                 c.number_format = "#,##0.00"
-        for cc in range(1, 6):
+        for cc in range(1, 7):
             ws4.cell(row=row, column=cc).border = THIN
         row += 1
     ded_last_row = max(row - 1, ded_first_row)

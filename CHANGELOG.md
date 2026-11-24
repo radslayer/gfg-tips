@@ -6,9 +6,51 @@ don't wait to be asked to update it. Sections are rewritten/condensed when
 stale, not just appended to. A fresh Claude session should be able to read
 this doc alone and pick up work without replaying prior conversations.
 
-Last updated: 2026-11-04
+Last updated: 2026-11-24
 
 ## Current state / in progress
+
+- **New: "Bonus" request type, added 11/24/2026 (per Guapo: "add a Bonus
+  request type. I think you understand how to do this").** Root cause: the
+  only way managers had to request an ad hoc dollar bonus (e.g. the 8-hour
+  birthday bonus program) was a 0-hour PTO request with a note -- a 0 hours
+  value is valid input to `sum_by_employee` (not skipped, just contributes
+  $0), so the request was silently marked "processed" with nothing actually
+  paid, and the note field is never read anywhere in `report_builder.py`
+  regardless. This surfaced 11/24/2026 when Mike Gray's birthday-bonus
+  request for Mariana Ortiz ($220, 8 hrs x her $27.50/hr Kitchen rate) never
+  reached her 11/20/2026 check. Fix: a 5th request type, `bonusRequests`
+  (dollar amount, like Employee Purchases/Misc Amount/Misc Reimbursements),
+  added additively everywhere the existing 4 types are wired through --
+  `index.html`'s request-type dropdown, `app.js`'s `REQ_LABELS`/
+  `REQ_TYPE_DISPLAY`, `main.py`'s `_REQUEST_COLLECTIONS` (the fetch/finalize
+  loops are already fully generic over this dict, so neither needed any
+  change), and `report_builder.build_report`'s new `pending_bonus` param.
+  Unlike the other 3 dollar-amount types, which land in the separate "Misc
+  Amount (deliveries)" ADP column, Bonus requests are summed via the same
+  `sum_by_employee` helper and then merged *additively* into the existing
+  `bonus_amounts` dict -- the same dict the automatic Kitchen Manager/
+  Supervisor bonus calc builds -- so a manual bonus request lands in ADP's
+  real "Bonus Amount" column, stacking correctly with an automatic bonus in
+  the same period rather than overwriting it. Also added a "Bonus Requests"
+  column to the "4 - Deductions" sheet for visibility/audit (informational
+  only -- the real Bonus Amount write-in doesn't look up this sheet, unlike
+  the other 4 deduction columns). Managers' submitted `note` (e.g. "birthday")
+  is still not surfaced anywhere in the generated report -- that deeper gap
+  (notes are invisible to `report_builder.py` for every request type, not
+  just this one) was flagged to Guapo but intentionally not addressed here,
+  to keep this change additive and scoped to what was asked. Mariana Ortiz's
+  actual $220 still needs to be entered on her NEXT biweekly ADP cycle (not
+  retroactively) -- tracked in the "Gourmet for Good HR" Claude Project doc,
+  not in code. Verified with a synthetic `build_report()` smoke test against
+  the real `test_timeclock.csv`/`employee_config.csv` fixtures (a $220
+  synthetic Bonus request for Mariana Ortiz correctly produced Bonus Amount
+  = 220 on the ADP Entry sheet and 220 in the new Deductions column; request
+  ID correctly appeared in `consumed_ids["bonusRequests"]`). `py_compile`
+  clean on both edited `.py` files. **Not yet deployed.** Managers (starting
+  with Mike) still need to be told to stop using the old 0-hour-PTO-plus-
+  note convention once this ships -- Guapo hasn't yet been given exact
+  message text to approve for that.
 
 - **"Driver Tip Payouts (1099s)" sheet expanded to the full driver payout calculation, 11/4/2026 (per Guapo: "I want you to include the full calculation for driver payouts. I see the tips, but not the setups and deliveries. Let's put everything we can in that record").** This sheet used to show only Tips -- Deliveries $ Total/Setups $ Total/Employee Purchases/Total only appeared on the separate "Contractors Payments" sheet's "Driver Payroll (1099s) Recap" table. Now both sheets carry the full breakdown (Driver, Days Driven, Tip $ Payout, Deliveries $ Total, Setups $ Total, Employee Purchases, Total, plus a Totals row), pulling from the same `driver_info`/`driver_purchases` data so the two sheets can never drift out of sync. Deliveries/Setups/Purchases are still flat per-driver dollar totals entered on the Tip Pool tab (not itemized line items -- that's all the app currently stores for them), so "full calculation" here means every number that feeds a driver's payout is now visible on this one sheet, not an itemized receipt-level breakdown. Verified with a synthetic `build_report()` run (two test drivers with deliveries/setups/a purchase) -- new columns populate correctly and the Totals row sums each column. Not yet deployed.
 

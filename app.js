@@ -36,18 +36,20 @@ const ROLE_LABELS = { admin: "Owner", manager: "Manager", entry: "Entry" };
 
 // Which collection each request type writes to, and which field holds its
 // amount (hours for PTO, dollars for everything else) -- must match the
-// four collections generate_payroll_report reads from in main.py.
+// five collections generate_payroll_report reads from in main.py.
 const REQ_LABELS = {
   ptoRequests: { amountField: "hours", label: "Hours" },
   employeePurchases: { amountField: "amount", label: "Amount ($)" },
   miscAmounts: { amountField: "amount", label: "Amount ($)" },
   miscReimbursements: { amountField: "amount", label: "Amount ($)" },
+  bonusRequests: { amountField: "amount", label: "Amount ($)" },
 };
 const REQ_TYPE_DISPLAY = {
   ptoRequests: "PTO",
   employeePurchases: "Employee Purchase",
   miscAmounts: "Delivery / Misc",
   miscReimbursements: "Reimbursement",
+  bonusRequests: "Bonus",
 };
 
 // Every real ADP payroll date, every 2 weeks, always a Friday (fixed
