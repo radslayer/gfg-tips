@@ -1226,7 +1226,46 @@ def build_report(csv_text, employees, order, pay_date, raw_csv_name,
     # Merged into bonus_amounts below, after the automatic Kitchen Manager/
     # Supervisor bonus calc finishes building that dict, so both sources
     # land summed in the same ADP column.
-    bonus_requests, bonus_req_ids, u5 = sum_by_employee(pending_bonus or [], "amount", employees)
+    #
+    # Added 11/25/2026 (per Guapo: "Mike may not remember the employee's
+    # current pay rate") -- a Bonus request can ALSO be logged as a number
+    # of hours instead of a dollar amount (the birthday bonus is usually a
+    # flat 8 hrs); those get converted to dollars here using that
+    # employee's CURRENT hourly rate from the Employees tab, so the person
+    # logging it never has to know or look up the rate themselves, and a
+    # later rate change is picked up correctly without anyone redoing the
+    # math. A request with a numeric "amount" is handled exactly like every
+    # other dollar-amount type (sum_by_employee); one with "hours" instead
+    # needs a real hourly rate on file to convert -- a salaried employee or
+    # one with no rate set can't be converted, so that request is flagged
+    # in the warnings banner (not silently dropped, and not guessed at)
+    # rather than contributing $0.
+    bonus_amount_docs = [r for r in (pending_bonus or []) if isinstance(r.get("amount"), (int, float))]
+    bonus_hours_docs = [
+        r for r in (pending_bonus or [])
+        if not isinstance(r.get("amount"), (int, float)) and isinstance(r.get("hours"), (int, float))
+    ]
+    bonus_requests, bonus_amt_ids, u5 = sum_by_employee(bonus_amount_docs, "amount", employees)
+    bonus_hours_ids = []
+    for r in bonus_hours_docs:
+        name = (r.get("employeeName") or "").strip()
+        if not name:
+            continue
+        if name not in employees:
+            u5.append(name)
+            continue
+        rate = employees[name].get("rate")
+        if employees[name].get("salaried") or not isinstance(rate, (int, float)) or rate <= 0:
+            warnings.append(
+                f'A Bonus request for {name} was logged as {r["hours"]:g} hours, but there is '
+                "no hourly rate on file to convert that to a dollar amount (salaried, or rate "
+                "not set on the Employees tab) -- NOT included. Enter it as a dollar amount "
+                "instead, or set their rate first."
+            )
+            continue
+        bonus_requests[name] = bonus_requests.get(name, 0.0) + round(r["hours"] * rate, 2)
+        bonus_hours_ids.append(r["id"])
+    bonus_req_ids = bonus_amt_ids + bonus_hours_ids
     if thao_makeup:
         pto_hours[THAO_NAME] = round(pto_hours.get(THAO_NAME, 0.0) + thao_makeup, 2)
     unresolved_names = sorted(set(u1) | set(u2) | set(u3) | set(u4) | set(u5))

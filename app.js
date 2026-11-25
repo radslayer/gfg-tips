@@ -1338,8 +1338,32 @@ $("contractLaborSaveBtn").addEventListener("click", async () => {
 
 // ---------- Payroll requests (PTO / purchases / misc / reimbursements) ----------
 function updateReqAmountLabel() {
-  const info = REQ_LABELS[$("reqType").value];
-  $("reqAmountLabel").textContent = info.label;
+  const type = $("reqType").value;
+  const isPurchase = type === "employeePurchases";
+  const isBonus = type === "bonusRequests";
+  // Added 11/25/2026 (per Guapo: "Mike may not remember the employee's
+  // current pay rate") -- a Bonus request can be entered as a flat dollar
+  // amount (like every other dollar-amount type) OR as a number of hours
+  // (the birthday bonus is usually a flat 8 hrs); report_builder.py
+  // converts hours to dollars at report time using that employee's
+  // CURRENT rate. See updateReqBonusModeField for the toggle itself.
+  let label = isBonus
+    ? ($("reqBonusMode").value === "hours" ? "Hours" : "Amount ($)")
+    : REQ_LABELS[type].label;
+  if (isPurchase) label += " (calculated)";
+  $("reqAmountLabel").textContent = label;
+}
+// Shows/hides the Hours-vs-Dollar-amount toggle, which only applies to
+// Bonus requests -- every other type already has one fixed, unambiguous
+// unit (REQ_LABELS[type].label).
+function updateReqBonusModeField() {
+  const isBonus = $("reqType").value === "bonusRequests";
+  $("reqBonusModeField").classList.toggle("hidden", !isBonus);
+  // Default to Hours (not Dollar amount) when freshly switching to Bonus --
+  // that's the common case this was added for. Never stomp on it while
+  // editing an existing request; startEditingRequest sets it explicitly
+  // from that record's own data instead.
+  if (isBonus && !editingRequestId) $("reqBonusMode").value = "hours";
 }
 // PTO can span multiple days (a week off, etc.) -- every other request type
 // stays a single date, exactly as before. Total hours for a PTO stretch is
@@ -1435,7 +1459,6 @@ function updateReqPurchaseFields() {
   $("reqNote").required = !isPurchase;
   $("reqAmount").readOnly = isPurchase;
   $("reqAmount").classList.toggle("locked", isPurchase);
-  $("reqAmountLabel").textContent = REQ_LABELS[$("reqType").value].label + (isPurchase ? " (calculated)" : "");
   if (isPurchase) recomputePurchaseAmount();
 }
 function recomputePurchaseAmount() {
@@ -1447,11 +1470,14 @@ function recomputePurchaseAmount() {
   $(id).addEventListener("input", recomputePurchaseAmount)
 );
 $("reqType").addEventListener("change", () => {
+  updateReqBonusModeField();
   updateReqAmountLabel();
   updateReqDateFields();
   updateReqPurchaseFields();
   populateEmployeeDropdown();
 });
+$("reqBonusMode").addEventListener("change", updateReqAmountLabel);
+updateReqBonusModeField();
 updateReqAmountLabel();
 updateReqDateFields();
 updateReqPurchaseFields();
@@ -1478,6 +1504,12 @@ $("reqSubmitBtn").addEventListener("click", async () => {
   const info = REQ_LABELS[type];
   const isPto = type === "ptoRequests";
   const isPurchase = type === "employeePurchases";
+  // Added 11/25/2026 -- see updateReqAmountLabel's comment: a Bonus
+  // request entered as Hours gets stored under "hours" (converted to a
+  // dollar amount server-side, using the employee's current rate), not
+  // under "amount" like a Bonus entered as a dollar figure.
+  const isBonus = type === "bonusRequests";
+  const bonusAsHours = isBonus && $("reqBonusMode").value === "hours";
   const employeeName = $("reqEmployee").value;
   const date = $("reqDate").value;
   const endDate = isPto ? $("reqEndDate").value : date;
@@ -1588,7 +1620,7 @@ $("reqSubmitBtn").addEventListener("click", async () => {
             : (!amount || amount <= 0)) {
     setMsg($("reqMsg"), isPto
       ? "Enter zero or more hours."
-      : `Enter a positive ${info.label.toLowerCase()}.`, "error");
+      : `Enter a positive ${bonusAsHours ? "number of hours" : info.label.toLowerCase()}.`, "error");
     return;
   }
   if (isPto && !targetPayrollDate) {
@@ -1598,7 +1630,7 @@ $("reqSubmitBtn").addEventListener("click", async () => {
 
   const payload = {
     employeeName,
-    [info.amountField]: amount,
+    [bonusAsHours ? "hours" : info.amountField]: amount,
     date,
     endDate,
     note: isPurchase ? null : note,
@@ -1657,6 +1689,13 @@ function startEditingRequest(row) {
   editingRequestId = row.id;
   $("reqType").value = row.type;
   $("reqType").disabled = true;
+  // Set BEFORE updateReqBonusModeField()/updateReqAmountLabel() below, so
+  // the toggle and the reqAmount label reflect this specific record's mode
+  // right away rather than whatever was last selected in the form.
+  if (row.type === "bonusRequests") {
+    $("reqBonusMode").value = row.isBonusHours ? "hours" : "amount";
+  }
+  updateReqBonusModeField();
   updateReqAmountLabel();
   updateReqDateFields();
   updateReqPurchaseFields();
@@ -1696,6 +1735,7 @@ function startEditingRequest(row) {
 function stopEditingRequest() {
   editingRequestId = null;
   $("reqType").disabled = false;
+  $("reqBonusMode").value = "hours";
   $("reqSubmitBtn").textContent = "Log it";
   hide($("reqCancelEditBtn"));
   setMsg($("reqMsg"), "", "");
@@ -1757,11 +1797,17 @@ async function loadPayrollRequests() {
       const note = (type === "employeePurchases" && data.productPurchased)
         ? `${data.productPurchased} — ${data.unitsPurchased ?? "?"} @ ${money(data.costPerUnit)}/unit`
         : data.note;
+      // A Bonus request logged as Hours has no "amount" field at all --
+      // see the submit handler's bonusAsHours branch -- so info.amountField
+      // ("amount") would read back undefined for it. Fall back to "hours"
+      // for display in that one case; every other type is unaffected.
+      const isBonusHours = type === "bonusRequests" && typeof data.amount !== "number" && typeof data.hours === "number";
       const row = {
         id: d.id,
         type,
         employeeName: data.employeeName,
-        amount: data[info.amountField],
+        amount: isBonusHours ? data.hours : data[info.amountField],
+        isBonusHours,
         date: data.date,
         endDate: data.endDate || data.date,
         note,
@@ -1989,7 +2035,7 @@ function renderRequestRows(container, rows, mode) {
     const row = document.createElement("div");
     row.className = "req-row";
 
-    const amtDisplay = r.type === "ptoRequests"
+    const amtDisplay = (r.type === "ptoRequests" || r.isBonusHours)
       ? `${(Number(r.amount) || 0).toFixed(2)} hrs`
       : money(r.amount);
     const dateDisplay = (r.type === "ptoRequests" && r.endDate && r.endDate !== r.date)
