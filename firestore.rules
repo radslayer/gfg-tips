@@ -28,7 +28,7 @@ rules_version = '2';
 // entirely -- these rules alone would not stop a direct malicious call.
 //
 // Payroll requests (ptoRequests, employeePurchases, miscAmounts,
-// miscReimbursements) are a record that must be kept forever (per Rod,
+// miscReimbursements, bonusRequests) are a record that must be kept forever (per Rod,
 // 8/31/2026 -- EE withholding problems can surface long after the fact):
 // nobody can ever delete one, and once its payrollDate is stamped by a
 // Payroll Report run, it can never be edited again by anyone through
@@ -165,6 +165,21 @@ service cloud.firestore {
     }
 
     match /miscReimbursements/{id} {
+      allow read: if isAdmin() || isManager();
+      allow create: if canLogPayrollRequests() && unrecordedCreate();
+      allow update: if canLogPayrollRequests() && unrecordedEdit();
+      allow delete: if false;
+    }
+
+    // Added 11/24/2026 -- the 5th payroll request type (ad hoc dollar
+    // bonuses). Missed when that type was first added, which broke
+    // loadPayrollRequests() for EVERY request type (not just this one):
+    // it loops over all of REQ_LABELS' collections including this one, so
+    // a getDocs() on a collection with no rule here fails permission-
+    // denied and aborts the whole function before any type's rows render.
+    // Same shape as the other four -- same roles, same forever-record /
+    // no-edit-after-payrollDate treatment.
+    match /bonusRequests/{id} {
       allow read: if isAdmin() || isManager();
       allow create: if canLogPayrollRequests() && unrecordedCreate();
       allow update: if canLogPayrollRequests() && unrecordedEdit();
