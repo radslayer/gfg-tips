@@ -151,12 +151,23 @@
      card's width, so long values (an email, "Employee Purchase", "void")
      had nowhere to go and wrapped one letter per line. A stacked card per
      request has no columns to fight over, so it renders correctly at any
-     width. */
-  .req-list { display: flex; flex-direction: column; gap: 8px; }
+     width.
+
+     Compacted to 2 lines per row, 11/25/2026 (per Guapo: "compress the
+     History section so that each record fits two lines maximum, and
+     makes better use of the horizontal space" -- this got lengthier than
+     expected once Bonus requests added a 5th type logging real usage).
+     Line 1: Type/Employee (left) and Amount/Date/Actions (right), same
+     row instead of stacked. Line 2: Note (left, truncates with an
+     ellipsis rather than wrapping -- a long note can't push this past 2
+     lines) and "entered by"/"voided by" (right). Still no fixed columns
+     (that's what broke the old table), just two flexible rows per card,
+     so it still can't repeat the one-letter-per-line failure. */
+  .req-list { display: flex; flex-direction: column; gap: 6px; }
   .req-row {
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 10px 12px;
+    padding: 8px 12px;
   }
   .req-row-top {
     display: flex;
@@ -166,12 +177,27 @@
     gap: 4px 12px;
   }
   .req-row-title { font-weight: 600; font-size: 14px; }
+  .req-row-right { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
   .req-row-actions { white-space: nowrap; }
   .req-row-actions button.link { margin-left: 12px; }
   .req-row-actions button.link:first-child { margin-left: 0; }
-  .req-row-meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
-  .req-row-note { font-size: 13px; margin-top: 6px; }
-  .req-row-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .req-row-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .req-row-bottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 4px 12px;
+    margin-top: 2px;
+  }
+  .req-row-note {
+    font-size: 13px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .req-row-sub { color: var(--muted); font-size: 12px; flex: 0 0 auto; white-space: nowrap; }
   .req-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
   .net-pool {
     font-weight: bold;

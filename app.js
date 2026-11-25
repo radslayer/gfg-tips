@@ -2049,15 +2049,31 @@ function renderRequestRows(container, rows, mode) {
       metaLine += ` · on payroll: ${formatShortDate(r.payrollDate)}`;
     }
 
+    // Compacted to 2 lines per row, 11/25/2026 (per Guapo) -- see the
+    // index.html comment above .req-list for the full reasoning. Line 1:
+    // title left, amount/date/actions right. Line 2 (only rendered when
+    // there's something to show): note left (CSS truncates it with an
+    // ellipsis instead of wrapping, so it can never push this past 2
+    // lines), "entered by"/"voided by" right -- both can apply to the
+    // same voided row, so they're joined rather than two separate lines.
+    const subParts = [];
+    if (r.enteredBy) subParts.push(`entered by ${r.enteredBy}`);
+    if (mode === "voided" && r.voidedBy) subParts.push(`voided by ${r.voidedBy}`);
+    const subText = subParts.join(" · ");
+
     row.innerHTML = `
       <div class="req-row-top">
         <span class="req-row-title">${REQ_TYPE_DISPLAY[r.type]} — ${r.employeeName}</span>
-        <span class="req-row-actions"></span>
+        <span class="req-row-right">
+          <span class="req-row-meta">${metaLine}</span>
+          <span class="req-row-actions"></span>
+        </span>
       </div>
-      <div class="req-row-meta">${metaLine}</div>
-      ${r.note ? `<div class="req-row-note">${r.note}</div>` : ""}
-      ${r.enteredBy ? `<div class="req-row-sub">entered by ${r.enteredBy}</div>` : ""}
-      ${mode === "voided" && r.voidedBy ? `<div class="req-row-sub">voided by ${r.voidedBy}</div>` : ""}
+      ${(r.note || subText) ? `
+      <div class="req-row-bottom">
+        <span class="req-row-note">${r.note || ""}</span>
+        <span class="req-row-sub">${subText}</span>
+      </div>` : ""}
     `;
 
     const actions = row.querySelector(".req-row-actions");
